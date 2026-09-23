@@ -163,4 +163,4 @@ This project targets clarity and correctness over raw throughput: it uses single
 
 ## License
 
-Not yet finalized.
+MIT License, see [LICENSE](./LICENSE).
