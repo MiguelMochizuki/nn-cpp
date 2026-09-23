@@ -75,6 +75,18 @@ size_t broadcast_offset(const std::vector<size_t>& out_idx, const std::vector<si
 
 template <typename Op>
 Tensor elementwise(const Tensor& a, const Tensor& b, Op op) {
+	if (a.shape() == b.shape()) {
+		Tensor out(a.shape());
+		const float* a_data = a.data().data();
+		const float* b_data = b.data().data();
+		float* out_data = out.data().data();
+		size_t n = a.size();
+		for (size_t i = 0; i < n; i++) {
+			out_data[i] = op(a_data[i], b_data[i]);
+		}
+		return out;
+	}
+
 	std::vector<size_t> out_shape = broadcast_shape(a.shape(), b.shape());
 	Tensor out(out_shape);
 	std::vector<size_t> out_strides = compute_strides(out_shape);
@@ -164,14 +176,21 @@ Tensor Tensor::transpose(std::vector<size_t> perm) const {
 Tensor Tensor::sum(int axis) const {
 	std::vector<size_t> out_shape = drop_axis(shape_, static_cast<size_t>(axis));
 	Tensor out(out_shape);
-	std::vector<size_t> out_strides = compute_strides(out_shape);
 
-	for (size_t flat = 0; flat < data_.size(); flat++) {
-		std::vector<size_t> idx = unravel_index(flat, strides_, shape_);
-		idx.erase(idx.begin() + axis);
-		size_t out_flat = 0;
-		for (size_t i = 0; i < idx.size(); i++) out_flat += idx[i] * out_strides[i];
-		out.data_[out_flat] += data_[flat];
+	size_t inner_size = strides_[axis];
+	size_t axis_size = shape_[axis];
+	size_t outer_size = data_.size() / (axis_size * inner_size);
+	const float* src = data_.data();
+	float* dst = out.data_.data();
+
+	for (size_t outer = 0; outer < outer_size; outer++) {
+		for (size_t a = 0; a < axis_size; a++) {
+			size_t src_base = outer * axis_size * inner_size + a * inner_size;
+			size_t dst_base = outer * inner_size;
+			for (size_t inner = 0; inner < inner_size; inner++) {
+				dst[dst_base + inner] += src[src_base + inner];
+			}
+		}
 	}
 	return out;
 }
@@ -186,14 +205,21 @@ Tensor Tensor::mean(int axis) const {
 Tensor Tensor::max(int axis) const {
 	std::vector<size_t> out_shape = drop_axis(shape_, static_cast<size_t>(axis));
 	Tensor out(out_shape, -std::numeric_limits<float>::infinity());
-	std::vector<size_t> out_strides = compute_strides(out_shape);
 
-	for (size_t flat = 0; flat < data_.size(); flat++) {
-		std::vector<size_t> idx = unravel_index(flat, strides_, shape_);
-		idx.erase(idx.begin() + axis);
-		size_t out_flat = 0;
-		for (size_t i = 0; i < idx.size(); i++) out_flat += idx[i] * out_strides[i];
-		out.data_[out_flat] = std::max(out.data_[out_flat], data_[flat]);
+	size_t inner_size = strides_[axis];
+	size_t axis_size = shape_[axis];
+	size_t outer_size = data_.size() / (axis_size * inner_size);
+	const float* src = data_.data();
+	float* dst = out.data_.data();
+
+	for (size_t outer = 0; outer < outer_size; outer++) {
+		for (size_t a = 0; a < axis_size; a++) {
+			size_t src_base = outer * axis_size * inner_size + a * inner_size;
+			size_t dst_base = outer * inner_size;
+			for (size_t inner = 0; inner < inner_size; inner++) {
+				dst[dst_base + inner] = std::max(dst[dst_base + inner], src[src_base + inner]);
+			}
+		}
 	}
 	return out;
 }

@@ -1,5 +1,3 @@
-include(${CMAKE_SOURCE_DIR}/cmake/FetchDoctest.cmake)
-
 add_executable(nn_tests
 	test_tensor.cpp
 	test_autograd.cpp
@@ -9,5 +7,4 @@ add_executable(nn_tests
 )
 target_link_libraries(nn_tests PRIVATE nn_core doctest::doctest)
 
-include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
 doctest_discover_tests(nn_tests)

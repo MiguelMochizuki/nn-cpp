@@ -45,21 +45,28 @@ Tensor im2col(const Tensor& x, size_t kh, size_t kw, size_t stride, size_t paddi
 	auto [h_out, w_out] = conv2d_output_size(H, W, kh, kw, stride, padding);
 	Tensor col({N, Cin * kh * kw, h_out * w_out});
 
+	const float* x_data = x.data().data();
+	float* col_data = col.data().data();
+	size_t sN = x.strides()[0], sC = x.strides()[1], sH = x.strides()[2], sW = x.strides()[3];
+	size_t col_sN = col.strides()[0], col_sRow = col.strides()[1];
+
 	for (size_t n = 0; n < N; n++) {
 		for (size_t c = 0; c < Cin; c++) {
 			for (size_t ph = 0; ph < kh; ph++) {
 				for (size_t pw = 0; pw < kw; pw++) {
 					size_t row = (c * kh + ph) * kw + pw;
+					size_t col_row_base = n * col_sN + row * col_sRow;
 					for (size_t oh = 0; oh < h_out; oh++) {
 						long ih = static_cast<long>(oh * stride + ph) - static_cast<long>(padding);
+						bool ih_valid = ih >= 0 && ih < static_cast<long>(H);
 						for (size_t ow = 0; ow < w_out; ow++) {
 							long iw = static_cast<long>(ow * stride + pw) - static_cast<long>(padding);
 							size_t col_idx = oh * w_out + ow;
 							float v = 0.0f;
-							if (ih >= 0 && ih < static_cast<long>(H) && iw >= 0 && iw < static_cast<long>(W)) {
-								v = x.get({n, c, static_cast<size_t>(ih), static_cast<size_t>(iw)});
+							if (ih_valid && iw >= 0 && iw < static_cast<long>(W)) {
+								v = x_data[n * sN + c * sC + static_cast<size_t>(ih) * sH + static_cast<size_t>(iw) * sW];
 							}
-							col.at({n, row, col_idx}) = v;
+							col_data[col_row_base + col_idx] = v;
 						}
 					}
 				}
@@ -75,19 +82,26 @@ Tensor col2im(const Tensor& col_grad, const std::vector<size_t>& x_shape, size_t
 	auto [h_out, w_out] = conv2d_output_size(H, W, kh, kw, stride, padding);
 	Tensor grad_x(x_shape);
 
+	const float* col_data = col_grad.data().data();
+	float* x_data = grad_x.data().data();
+	size_t sN = grad_x.strides()[0], sC = grad_x.strides()[1], sH = grad_x.strides()[2], sW = grad_x.strides()[3];
+	size_t col_sN = col_grad.strides()[0], col_sRow = col_grad.strides()[1];
+
 	for (size_t n = 0; n < N; n++) {
 		for (size_t c = 0; c < Cin; c++) {
 			for (size_t ph = 0; ph < kh; ph++) {
 				for (size_t pw = 0; pw < kw; pw++) {
 					size_t row = (c * kh + ph) * kw + pw;
+					size_t col_row_base = n * col_sN + row * col_sRow;
 					for (size_t oh = 0; oh < h_out; oh++) {
 						long ih = static_cast<long>(oh * stride + ph) - static_cast<long>(padding);
+						bool ih_valid = ih >= 0 && ih < static_cast<long>(H);
 						for (size_t ow = 0; ow < w_out; ow++) {
 							long iw = static_cast<long>(ow * stride + pw) - static_cast<long>(padding);
-							if (ih >= 0 && ih < static_cast<long>(H) && iw >= 0 && iw < static_cast<long>(W)) {
+							if (ih_valid && iw >= 0 && iw < static_cast<long>(W)) {
 								size_t col_idx = oh * w_out + ow;
-								grad_x.at({n, c, static_cast<size_t>(ih), static_cast<size_t>(iw)}) +=
-									col_grad.get({n, row, col_idx});
+								x_data[n * sN + c * sC + static_cast<size_t>(ih) * sH + static_cast<size_t>(iw) * sW] +=
+									col_data[col_row_base + col_idx];
 							}
 						}
 					}
@@ -269,9 +283,20 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
 
 	Tensor col = im2col(x.data(), kh, kw, static_cast<size_t>(stride), static_cast<size_t>(padding));
 	Tensor weight_mat = weight.data().reshape({Cout, Cin * kh * kw});
-	Tensor out_mat = matmul(weight_mat, col);
-	Tensor bias_mat = bias.data().reshape({Cout, 1});
-	Tensor out_biased = add(out_mat, bias_mat);
+	Tensor out_biased = matmul(weight_mat, col);
+	{
+		size_t out_batch = out_biased.shape()[0];
+		size_t hw = out_biased.shape()[2];
+		float* out_data = out_biased.data().data();
+		const float* bias_data = bias.data().data().data();
+		for (size_t n = 0; n < out_batch; n++) {
+			for (size_t c = 0; c < Cout; c++) {
+				float bias_val = bias_data[c];
+				float* row = out_data + (n * Cout + c) * hw;
+				for (size_t i = 0; i < hw; i++) row[i] += bias_val;
+			}
+		}
+	}
 	Tensor result = out_biased.reshape({N, Cout, h_out, w_out});
 
 	Tensor saved_col = col;
@@ -314,6 +339,9 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 	Tensor result({N, C, h_out, w_out});
 	std::vector<size_t> argmax(N * C * h_out * w_out);
 
+	const float* x_data = x.data().data().data();
+	float* result_data = result.data().data();
+
 	for (size_t n = 0; n < N; n++) {
 		for (size_t c = 0; c < C; c++) {
 			for (size_t oh = 0; oh < h_out; oh++) {
@@ -324,15 +352,16 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 						for (size_t pw = 0; pw < kernel_size; pw++) {
 							size_t ih = oh * stride + ph;
 							size_t iw = ow * stride + pw;
-							float v = x.data().get({n, c, ih, iw});
+							size_t flat = ((n * C + c) * H + ih) * W + iw;
+							float v = x_data[flat];
 							if (v > best) {
 								best = v;
-								best_flat = ((n * C + c) * H + ih) * W + iw;
+								best_flat = flat;
 							}
 						}
 					}
-					result.at({n, c, oh, ow}) = best;
 					size_t out_idx = ((n * C + c) * h_out + oh) * w_out + ow;
+					result_data[out_idx] = best;
 					argmax[out_idx] = best_flat;
 				}
 			}
