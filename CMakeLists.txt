@@ -9,6 +9,8 @@ option(NN_BUILD_APPS "Build example apps" ON)
 
 add_library(nn_core STATIC
 	src/tensor.cpp
+	src/autograd/value.cpp
+	src/autograd/ops.cpp
 )
 
 target_include_directories(nn_core PUBLIC include)
