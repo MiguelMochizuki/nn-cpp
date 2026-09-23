@@ -174,8 +174,14 @@ Tensor Tensor::transpose(std::vector<size_t> perm) const {
 }
 
 Tensor Tensor::sum(int axis) const {
+	if (axis < 0 || static_cast<size_t>(axis) >= shape_.size()) {
+		throw TensorIndexError();
+	}
 	std::vector<size_t> out_shape = drop_axis(shape_, static_cast<size_t>(axis));
 	Tensor out(out_shape);
+	if (data_.empty()) {
+		return out;
+	}
 
 	size_t inner_size = strides_[axis];
 	size_t axis_size = shape_[axis];
@@ -203,8 +209,14 @@ Tensor Tensor::mean(int axis) const {
 }
 
 Tensor Tensor::max(int axis) const {
+	if (axis < 0 || static_cast<size_t>(axis) >= shape_.size()) {
+		throw TensorIndexError();
+	}
 	std::vector<size_t> out_shape = drop_axis(shape_, static_cast<size_t>(axis));
 	Tensor out(out_shape, -std::numeric_limits<float>::infinity());
+	if (data_.empty()) {
+		return out;
+	}
 
 	size_t inner_size = strides_[axis];
 	size_t axis_size = shape_[axis];

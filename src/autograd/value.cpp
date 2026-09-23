@@ -49,17 +49,38 @@ void Value::backward() const {
 
 	std::vector<Value> topo_order;
 	std::unordered_set<NodeImpl*> visited;
+	std::vector<Value> stack;
+	std::unordered_set<NodeImpl*> pushed;
 
-	std::function<void(const Value&)> visit = [&](const Value& v) {
-		if (visited.count(v.impl())) return;
+	stack.push_back(*this);
+	pushed.insert(impl());
+	while (!stack.empty()) {
+		Value v = stack.back();
+		if (visited.count(v.impl())) {
+			stack.pop_back();
+			topo_order.push_back(v);
+			continue;
+		}
 		visited.insert(v.impl());
 		for (const Value& p : v.impl()->parents) {
-			visit(p);
+			if (!pushed.count(p.impl())) {
+				pushed.insert(p.impl());
+				stack.push_back(p);
+			}
 		}
-		topo_order.push_back(v);
-	};
-	visit(*this);
+	}
 
+	// Non-leaf nodes are transient scratch space for one backward() pass: their
+	// grad must not carry over from an earlier call on the same graph, or a
+	// second backward() on unchanged nodes silently compounds instead of
+	// recomputing. Leaf nodes (no backward_fn) keep accumulating across calls
+	// until zero_grad() — that cross-call accumulation is the documented,
+	// tested default (spec §5).
+	for (const Value& v : topo_order) {
+		if (v.impl()->backward_fn) {
+			v.impl()->grad = Tensor(v.impl()->data.shape(), 0.0f);
+		}
+	}
 	impl_->grad = Tensor(impl_->data.shape(), 1.0f);
 
 	for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {

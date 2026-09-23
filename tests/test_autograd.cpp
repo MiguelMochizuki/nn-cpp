@@ -107,6 +107,13 @@ TEST_CASE("broadcasted add sums incoming grad over broadcast axes into the small
 	CHECK(bias.grad().get({1}) == doctest::Approx(2.0f));
 }
 
+TEST_CASE("broadcasted mul gradcheck") {
+	Value b = Value::leaf(Tensor({1, 3}, std::vector<float>{2, -1, 0.5f}), false);
+	auto f = [b](Value a) mutable { return sum(mul(a, b)); };
+	Value a = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6}), true);
+	CHECK(gradcheck(f, a));
+}
+
 TEST_CASE("diamond: one leaf feeding two ops accumulates both gradients") {
 	Value w = Value::leaf(Tensor({1}, 3.0f), true);
 	Value branch_a = scale(w, 2.0f);
@@ -123,6 +130,29 @@ TEST_CASE("calling backward twice without zero_grad accumulates") {
 	Value out2 = scale(w, 2.0f);
 	out2.backward();
 	CHECK(w.grad().get({0}) == doctest::Approx(4.0f));
+}
+
+TEST_CASE("calling backward twice on the SAME graph accumulates onto the leaf without compounding intermediate grads") {
+	Value w = Value::leaf(Tensor({1}, 3.0f), true);
+	Value a = scale(w, 2.0f);
+	Value b = scale(a, 5.0f);
+
+	b.backward();
+	CHECK(w.grad().get({0}) == doctest::Approx(10.0f));
+
+	b.backward();
+	CHECK(w.grad().get({0}) == doctest::Approx(20.0f));
+}
+
+TEST_CASE("backward, zero_grad, backward again on the same graph gives one pass worth of gradient") {
+	Value w = Value::leaf(Tensor({1}, 3.0f), true);
+	Value a = scale(w, 2.0f);
+	Value b = scale(a, 5.0f);
+
+	b.backward();
+	w.zero_grad();
+	b.backward();
+	CHECK(w.grad().get({0}) == doctest::Approx(10.0f));
 }
 
 TEST_CASE("graph nodes are freed once all Values referencing them go out of scope") {
@@ -225,6 +255,44 @@ TEST_CASE("conv2d gradcheck wrt bias") {
 	CHECK(gradcheck(f, b, 1e-3f, 0.1f));
 }
 
+TEST_CASE("conv2d gradcheck with uneven output size, stride 2, multiple channels and a batch") {
+	Value w = Value::leaf(Tensor::random({2, 3, 3, 3}, -0.3f, 0.3f), false);
+	Value b = Value::leaf(Tensor::random({2}, -0.1f, 0.1f), false);
+	auto f = [w, b](Value x) mutable { return sum(conv2d(x, w, b, 2, 1)); };
+	Value x = Value::leaf(Tensor::random({2, 3, 7, 6}, -1.0f, 1.0f), true);
+	Value y = conv2d(x, w, b, 2, 1);
+	CHECK(y.data().shape() == std::vector<size_t>{2, 2, 4, 3});
+	CHECK(gradcheck(f, x, 1e-3f, 0.15f));
+}
+
+TEST_CASE("conv2d throws when bias size does not match out_channels") {
+	Value x = Value::leaf(Tensor({1, 1, 4, 4}, 1.0f), false);
+	Value w = Value::leaf(Tensor({2, 1, 3, 3}, 1.0f), false);
+	Value b = Value::leaf(Tensor({3}, 0.0f), false);
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0), TensorShapeError);
+}
+
+TEST_CASE("conv2d throws when kernel is larger than the padded input") {
+	Value x = Value::leaf(Tensor({1, 1, 2, 2}, 1.0f), false);
+	Value w = Value::leaf(Tensor({1, 1, 5, 5}, 1.0f), false);
+	Value b = Value::leaf(Tensor({1}, 0.0f), false);
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0), TensorShapeError);
+}
+
+TEST_CASE("conv2d throws on zero stride") {
+	Value x = Value::leaf(Tensor({1, 1, 4, 4}, 1.0f), false);
+	Value w = Value::leaf(Tensor({1, 1, 3, 3}, 1.0f), false);
+	Value b = Value::leaf(Tensor({1}, 0.0f), false);
+	CHECK_THROWS_AS(conv2d(x, w, b, 0, 0), TensorShapeError);
+}
+
+TEST_CASE("conv2d throws when input channels do not match weight") {
+	Value x = Value::leaf(Tensor({1, 2, 4, 4}, 1.0f), false);
+	Value w = Value::leaf(Tensor({1, 3, 3, 3}, 1.0f), false);
+	Value b = Value::leaf(Tensor({1}, 0.0f), false);
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0), TensorShapeError);
+}
+
 TEST_CASE("maxpool2d picks the max of each window") {
 	Value x = Value::leaf(Tensor({1, 1, 4, 4}, std::vector<float>{
 	                           1, 2, 5, 6,
@@ -275,6 +343,16 @@ TEST_CASE("maxpool2d floors a non-integer output size, ignoring the trailing row
 	CHECK(y.data().get({0, 0, 1, 1}) == 16.0f);
 }
 
+TEST_CASE("maxpool2d throws when kernel is larger than the input") {
+	Value x = Value::leaf(Tensor({1, 1, 2, 2}, 1.0f), false);
+	CHECK_THROWS_AS(maxpool2d(x, 5, 1), TensorShapeError);
+}
+
+TEST_CASE("maxpool2d throws on zero stride") {
+	Value x = Value::leaf(Tensor({1, 1, 4, 4}, 1.0f), false);
+	CHECK_THROWS_AS(maxpool2d(x, 2, 0), TensorShapeError);
+}
+
 TEST_CASE("cross_entropy_loss matches hand-computed value for a 2-class batch") {
 	Value logits = Value::leaf(Tensor({2, 2}, std::vector<float>{1.0f, 1.0f, 2.0f, 0.0f}), true);
 	Tensor targets({2}, std::vector<float>{0.0f, 0.0f});
@@ -288,6 +366,18 @@ TEST_CASE("cross_entropy_loss gradcheck") {
 	auto f = [targets](Value logits) mutable { return cross_entropy_loss(logits, targets); };
 	Value logits = Value::leaf(Tensor({2, 3}, std::vector<float>{0.2f, 1.5f, -0.3f, 1.0f, -1.0f, 0.5f}), true);
 	CHECK(gradcheck(f, logits));
+}
+
+TEST_CASE("cross_entropy_loss throws when logits are not 2-D") {
+	Value logits = Value::leaf(Tensor({6}, 0.0f), true);
+	Tensor targets({2}, 0.0f);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets), TensorShapeError);
+}
+
+TEST_CASE("cross_entropy_loss throws when targets count does not match the batch size") {
+	Value logits = Value::leaf(Tensor({2, 3}, 0.0f), true);
+	Tensor targets({3}, 0.0f);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets), TensorShapeError);
 }
 
 TEST_CASE("mse_loss matches hand-computed value") {

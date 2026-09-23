@@ -13,6 +13,9 @@ namespace nn {
 
 DataLoader::DataLoader(const Dataset& dataset, size_t batch_size, bool shuffle)
 	: dataset_(dataset), batch_size_(batch_size), shuffle_(shuffle), rng_(std::random_device{}()) {
+	if (batch_size_ == 0) {
+		throw TensorShapeError();
+	}
 	indices_.resize(dataset_.size());
 	std::iota(indices_.begin(), indices_.end(), 0);
 	reset_epoch();
@@ -27,6 +30,9 @@ void DataLoader::reset_epoch() {
 }
 
 std::pair<Value, Tensor> DataLoader::get_batch(size_t batch_index) const {
+	if (batch_index >= num_batches()) {
+		throw TensorIndexError();
+	}
 	size_t start = batch_index * batch_size_;
 	size_t end = std::min(start + batch_size_, dataset_.size());
 

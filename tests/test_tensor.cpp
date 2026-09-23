@@ -130,6 +130,25 @@ TEST_CASE("max along axis") {
 	CHECK(m.get({1}) == 6.0f);
 }
 
+TEST_CASE("sum with negative or out-of-range axis throws") {
+	Tensor t({2, 3});
+	CHECK_THROWS_AS(t.sum(-1), TensorIndexError);
+	CHECK_THROWS_AS(t.sum(2), TensorIndexError);
+}
+
+TEST_CASE("max with negative or out-of-range axis throws") {
+	Tensor t({2, 3});
+	CHECK_THROWS_AS(t.max(-1), TensorIndexError);
+	CHECK_THROWS_AS(t.max(5), TensorIndexError);
+}
+
+TEST_CASE("sum over a zero-sized dimension returns zeros instead of crashing") {
+	Tensor t({0, 3});
+	Tensor s = t.sum(0);
+	CHECK(s.shape() == std::vector<size_t>{3});
+	CHECK(s.get({0}) == 0.0f);
+}
+
 TEST_CASE("add same shape") {
 	Tensor a({2}, std::vector<float>{1, 2});
 	Tensor b({2}, std::vector<float>{3, 4});
@@ -150,6 +169,12 @@ TEST_CASE("add broadcasts a smaller trailing dimension") {
 TEST_CASE("add with incompatible shapes throws") {
 	Tensor a({3});
 	Tensor b({4});
+	CHECK_THROWS_AS(add(a, b), TensorShapeError);
+}
+
+TEST_CASE("add with incompatible non-trailing shapes throws") {
+	Tensor a({2, 3});
+	Tensor b({2, 4});
 	CHECK_THROWS_AS(add(a, b), TensorShapeError);
 }
 

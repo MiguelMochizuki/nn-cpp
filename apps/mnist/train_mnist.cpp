@@ -57,8 +57,7 @@ int main(int argc, char** argv) {
 			auto [x_batch, y_batch] = train_loader.get_batch(b);
 			Value x_norm = scale(x_batch, 1.0f / 255.0f);
 			Value logits = model.forward(x_norm);
-			Tensor targets = y_batch.reshape({y_batch.shape()[0]});
-			Value loss = cross_entropy_loss(logits, targets);
+			Value loss = cross_entropy_loss(logits, y_batch);
 
 			optimizer.zero_grad();
 			loss.backward();
@@ -89,7 +88,7 @@ int main(int argc, char** argv) {
 					best_class = c;
 				}
 			}
-			size_t true_class = static_cast<size_t>(std::round(y_batch.get({i, 0})));
+			size_t true_class = static_cast<size_t>(std::round(y_batch.get({i})));
 			if (best_class == true_class) correct++;
 			total++;
 		}

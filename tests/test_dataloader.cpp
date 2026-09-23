@@ -42,6 +42,17 @@ TEST_CASE("num_batches accounts for a partial final batch") {
 	CHECK(loader.num_batches() == 3);
 }
 
+TEST_CASE("DataLoader throws on a zero batch_size") {
+	IndexEncodingDataset dataset(5);
+	CHECK_THROWS_AS(DataLoader(dataset, 0, false), TensorShapeError);
+}
+
+TEST_CASE("get_batch throws for a batch_index past the end") {
+	IndexEncodingDataset dataset(5);
+	DataLoader loader(dataset, 2, false);
+	CHECK_THROWS_AS(loader.get_batch(3), TensorIndexError);
+}
+
 TEST_CASE("the final partial batch has the correct, smaller size") {
 	IndexEncodingDataset dataset(5);
 	DataLoader loader(dataset, 2, false);

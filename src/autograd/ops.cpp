@@ -269,6 +269,12 @@ Value softmax(const Value& x, int axis) {
 }
 
 Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride, int padding) {
+	if (x.data().ndim() != 4 || weight.data().ndim() != 4) {
+		throw TensorShapeError();
+	}
+	if (stride <= 0 || padding < 0) {
+		throw TensorShapeError();
+	}
 	size_t Cout = weight.data().shape()[0];
 	size_t Cin = weight.data().shape()[1];
 	size_t kh = weight.data().shape()[2];
@@ -276,6 +282,12 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
 	size_t N = x.data().shape()[0];
 	size_t H = x.data().shape()[2];
 	size_t W = x.data().shape()[3];
+	if (x.data().shape()[1] != Cin || bias.data().size() != Cout) {
+		throw TensorShapeError();
+	}
+	if (kh > H + 2 * static_cast<size_t>(padding) || kw > W + 2 * static_cast<size_t>(padding)) {
+		throw TensorShapeError();
+	}
 	Conv2dOutputSize out_size =
 		conv2d_output_size(H, W, kh, kw, static_cast<size_t>(stride), static_cast<size_t>(padding));
 	size_t h_out = out_size.h_out;
@@ -328,10 +340,19 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
 }
 
 Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
+	if (x.data().ndim() != 4) {
+		throw TensorShapeError();
+	}
+	if (kernel_size == 0 || stride == 0) {
+		throw TensorShapeError();
+	}
 	size_t N = x.data().shape()[0];
 	size_t C = x.data().shape()[1];
 	size_t H = x.data().shape()[2];
 	size_t W = x.data().shape()[3];
+	if (kernel_size > H || kernel_size > W) {
+		throw TensorShapeError();
+	}
 	Conv2dOutputSize out_size = conv2d_output_size(H, W, kernel_size, kernel_size, stride, 0);
 	size_t h_out = out_size.h_out;
 	size_t w_out = out_size.w_out;
@@ -381,8 +402,14 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 
 Value cross_entropy_loss(const Value& logits, const Tensor& targets) {
 	const Tensor& logits_data = logits.data();
+	if (logits_data.ndim() != 2) {
+		throw TensorShapeError();
+	}
 	size_t N = logits_data.shape()[0];
 	size_t C = logits_data.shape()[1];
+	if (targets.ndim() != 1 || targets.size() != N) {
+		throw TensorShapeError();
+	}
 
 	Tensor max_val = insert_axis(logits_data.max(1), 1);
 	Tensor shifted = sub(logits_data, max_val);

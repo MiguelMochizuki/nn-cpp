@@ -29,17 +29,33 @@ Tensor load_idx_ubyte(const std::string& path) {
 	}
 
 	uint32_t magic = read_u32_be(file);
+	if (!file) {
+		throw IdxParseError();
+	}
+	bool magic_valid = ((magic >> 24) & 0xFF) == 0x00 && ((magic >> 16) & 0xFF) == 0x00 && ((magic >> 8) & 0xFF) == 0x08;
+	if (!magic_valid) {
+		throw IdxParseError();
+	}
 	uint8_t ndim = static_cast<uint8_t>(magic & 0xFF);
+	if (ndim == 0) {
+		throw IdxParseError();
+	}
 
 	std::vector<size_t> shape(ndim);
 	size_t total = 1;
 	for (uint8_t i = 0; i < ndim; i++) {
 		shape[i] = read_u32_be(file);
+		if (!file) {
+			throw IdxParseError();
+		}
 		total *= shape[i];
 	}
 
 	std::vector<unsigned char> raw(total);
 	file.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(total));
+	if (static_cast<size_t>(file.gcount()) != total) {
+		throw IdxParseError();
+	}
 
 	std::vector<float> data(total);
 	for (size_t i = 0; i < total; i++) {
