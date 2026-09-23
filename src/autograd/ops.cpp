@@ -160,6 +160,25 @@ Value sum(const Value& x) {
 	});
 }
 
+Value transpose(const Value& x, std::vector<size_t> perm) {
+	Tensor result = x.data().transpose(perm);
+	std::vector<size_t> inverse(perm.size());
+	for (size_t i = 0; i < perm.size(); i++) inverse[perm[i]] = i;
+	return Value::node(result, {x}, [x, inverse](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		x.grad() = add(x.grad(), grad_out.transpose(inverse));
+	});
+}
+
+Value reshape(const Value& x, std::vector<size_t> new_shape) {
+	Tensor result = x.data().reshape(new_shape);
+	std::vector<size_t> orig_shape = x.data().shape();
+	return Value::node(result, {x}, [x, orig_shape](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		x.grad() = add(x.grad(), grad_out.reshape(orig_shape));
+	});
+}
+
 Value matmul(const Value& a, const Value& b) {
 	Tensor result = matmul(a.data(), b.data());
 	return Value::node(result, {a, b}, [a, b](const Tensor& grad_out) {

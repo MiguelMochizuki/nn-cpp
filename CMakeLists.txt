@@ -11,6 +11,13 @@ add_library(nn_core STATIC
 	src/tensor.cpp
 	src/autograd/value.cpp
 	src/autograd/ops.cpp
+	src/nn/linear.cpp
+	src/nn/conv2d.cpp
+	src/nn/pool2d.cpp
+	src/nn/activation.cpp
+	src/nn/sequential.cpp
+	src/optim/sgd.cpp
+	src/data/dataloader.cpp
 )
 
 target_include_directories(nn_core PUBLIC include)

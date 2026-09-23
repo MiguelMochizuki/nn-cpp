@@ -63,6 +63,28 @@ Value scale(const Value& a, float scalar);
  */
 Value sum(const Value& x);
 
+/* Public, differentiable dimension permutation
+ *
+ * Parameters:
+ * Value x: operand
+ * vector<size_t> perm: perm[i] is the source dimension that becomes output dimension i
+ *
+ * Returns Value: x.data() permuted by perm; backward permutes grad_out by the inverse
+ * permutation
+ */
+Value transpose(const Value& x, std::vector<size_t> perm);
+
+/* Public, differentiable reshape
+ *
+ * Parameters:
+ * Value x: operand
+ * vector<size_t> new_shape: new dimension sizes; product must equal x.data().size()
+ *
+ * Returns Value: x.data() reshaped to new_shape; backward reshapes grad_out back to
+ * x's original shape
+ */
+Value reshape(const Value& x, std::vector<size_t> new_shape);
+
 /* Public, differentiable batched matrix multiplication
  *
  * Parameters:
