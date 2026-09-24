@@ -190,7 +190,15 @@ anywhere in this design:
   — split the flat `n`-element loop across workers; each writes disjoint
   output indices.
 - `matmul()` in `src/tensor.cpp` — split by output row `i` within each
-  batch; each worker owns a disjoint set of output rows.
+  batch; each worker owns a disjoint set of output rows. Within each
+  worker's row range, additionally tile the `(k, j)` loops (fixed block
+  size, e.g. 64) so a block of `b` and the corresponding output block stay
+  cache-resident across that range before moving to the next block — the
+  existing `i, k, j` loop order is already the cache-friendly form
+  (`a_val` loaded once per `(i,k)`, streamed sequential access over `j`);
+  tiling adds reuse on top of that for matrices too large to fit `b`'s
+  working set in L1/L2. Block size is a naive fixed constant, not
+  auto-tuned to detected cache size.
 - `Tensor::sum/mean/max(axis)` in `src/tensor.cpp` — split by `outer`
   index; each outer index's destination slice (`dst_base = outer *
   inner_size`, width `inner_size`) is disjoint by construction, so this is
@@ -248,3 +256,20 @@ Add `tests/test_parallel.cpp`, added to `tests/CMakeLists.txt`'s
 - `README.md` — "Scope" section currently states "single-threaded,
   cache-friendly loops rather than multi-threading" — update to reflect
   the new basic parallelism, keep the "no SIMD" part.
+
+## Future work (explicitly deferred, not part of this plan)
+
+Raised and considered during design: making `im2col`'s `col` a non-owning
+strided view over `x`'s existing storage instead of materializing a new
+`{N, Cin*kh*kw, h_out*w_out}` buffer (the technique NumPy's `as_strided`
+uses for convolution). Rejected for this plan because it requires `Tensor`
+to support views that alias another tensor's buffer through custom,
+possibly-overlapping strides plus an offset — every `Tensor` today owns its
+own contiguous storage sized exactly to its own shape, with strides that
+only ever describe that owned layout; there is no aliasing/view concept at
+all. Padding and overlapping receptive fields also mean it isn't a pure
+stride trick the way it is for the no-padding, stride-1 case. This is a
+Tensor storage-model redesign — bigger and riskier than "cut allocation
+churn," and out of scope for the non-goals already listed above. Worth a
+dedicated future spec if `im2col`'s materialization cost turns out to
+matter in practice.
