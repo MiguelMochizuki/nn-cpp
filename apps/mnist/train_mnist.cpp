@@ -31,8 +31,8 @@ int main(int argc, char** argv) {
 	}
 	std::string dir = argv[1];
 
-	MnistDataset train_set = MnistDataset::load(dir + "/train-images-idx3-ubyte", dir + "/train-labels-idx1-ubyte");
-	MnistDataset test_set = MnistDataset::load(dir + "/t10k-images-idx3-ubyte", dir + "/t10k-labels-idx1-ubyte");
+	MnistDataset train_set = MnistDataset::load(dir + "/train-images.idx3-ubyte", dir + "/train-labels.idx1-ubyte");
+	MnistDataset test_set = MnistDataset::load(dir + "/t10k-images.idx3-ubyte", dir + "/t10k-labels.idx1-ubyte");
 
 	Sequential model;
 	model.add(std::make_unique<Conv2d>(1, 8, 3, 1, 1));
