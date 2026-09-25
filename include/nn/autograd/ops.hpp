@@ -187,4 +187,20 @@ Value cross_entropy_loss(const Value& logits, const Tensor& targets);
  */
 Value mse_loss(const Value& predictions, const Value& targets);
 
+/* Public, differentiable elementwise addition operator, alias for add(a, b) */
+Value operator+(const Value& a, const Value& b);
+
+/* Public, differentiable elementwise subtraction operator, alias for sub(a, b) */
+Value operator-(const Value& a, const Value& b);
+
+/* Public, differentiable elementwise multiplication operator, alias for mul(a, b) */
+Value operator*(const Value& a, const Value& b);
+
+/* Public, differentiable scalar multiplication operator, alias for scale(a, scalar) */
+Value operator*(const Value& a, float scalar);
+Value operator*(float scalar, const Value& a);
+
+/* Public, differentiable negation operator, alias for scale(a, -1.0f) */
+Value operator-(const Value& a);
+
 }  // namespace nn

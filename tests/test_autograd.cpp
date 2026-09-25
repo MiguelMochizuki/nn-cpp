@@ -393,3 +393,35 @@ TEST_CASE("mse_loss gradcheck") {
 	Value pred = Value::leaf(Tensor({3}, std::vector<float>{1.0f, 0.0f, 1.5f}), true);
 	CHECK(gradcheck(f, pred));
 }
+
+TEST_CASE("Value operators match free-function equivalents") {
+	Value a = Value::leaf(Tensor({2}, std::vector<float>{6.0f, 8.0f}), true);
+	Value b = Value::leaf(Tensor({2}, std::vector<float>{2.0f, 4.0f}), true);
+	CHECK((a + b).data().get({0}) == 8.0f);
+	CHECK((a - b).data().get({0}) == 4.0f);
+	CHECK((a * b).data().get({1}) == 32.0f);
+	CHECK((a * 3.0f).data().get({0}) == 18.0f);
+	CHECK((3.0f * a).data().get({0}) == 18.0f);
+	CHECK((-a).data().get({0}) == -6.0f);
+}
+
+TEST_CASE("Value operators are differentiable through backward, including sign") {
+	Value a = Value::leaf(Tensor({1}, 2.0f), true);
+	Value b = Value::leaf(Tensor({1}, 3.0f), true);
+	Value y = a * b + a;
+	y.backward();
+	CHECK(a.grad().get({0}) == doctest::Approx(4.0f));
+	CHECK(b.grad().get({0}) == doctest::Approx(2.0f));
+}
+
+TEST_CASE("unary negate and negative-scalar multiply carry correct sign through backward") {
+	Value x = Value::leaf(Tensor({1}, 5.0f), true);
+	Value neg = -x;
+	neg.backward();
+	CHECK(x.grad().get({0}) == doctest::Approx(-1.0f));
+
+	Value x2 = Value::leaf(Tensor({1}, 5.0f), true);
+	Value scaled = x2 * -3.0f;
+	scaled.backward();
+	CHECK(x2.grad().get({0}) == doctest::Approx(-3.0f));
+}

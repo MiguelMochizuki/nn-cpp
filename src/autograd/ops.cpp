@@ -451,4 +451,11 @@ Value mse_loss(const Value& predictions, const Value& targets) {
 	return scale(total, 1.0f / static_cast<float>(predictions.data().size()));
 }
 
+Value operator+(const Value& a, const Value& b) { return add(a, b); }
+Value operator-(const Value& a, const Value& b) { return sub(a, b); }
+Value operator*(const Value& a, const Value& b) { return mul(a, b); }
+Value operator*(const Value& a, float scalar) { return scale(a, scalar); }
+Value operator*(float scalar, const Value& a) { return scale(a, scalar); }
+Value operator-(const Value& a) { return scale(a, -1.0f); }
+
 }  // namespace nn
