@@ -39,7 +39,13 @@ Tensor& Value::grad() const { return impl_->grad; }
 bool Value::requires_grad() const { return impl_->requires_grad; }
 NodeImpl* Value::impl() const { return impl_.get(); }
 
-void Value::zero_grad() const { impl_->grad.zero_(); }
+void Value::zero_grad() const {
+	if (impl_->grad.shape() != impl_->data.shape()) {
+		impl_->grad = Tensor(impl_->data.shape(), 0.0f);
+	} else {
+		impl_->grad.zero_();
+	}
+}
 
 size_t Value::live_node_count() { return g_live_node_count; }
 
@@ -71,18 +77,20 @@ void Value::backward() const {
 		}
 	}
 
-	// Non-leaf nodes are transient scratch space for one backward() pass: their
-	// grad must not carry over from an earlier call on the same graph, or a
-	// second backward() on unchanged nodes silently compounds instead of
-	// recomputing. Leaf nodes (no backward_fn) keep accumulating across calls
-	// until zero_grad() — that cross-call accumulation is the documented,
-	// tested default (spec §5).
 	for (const Value& v : topo_order) {
 		if (v.impl()->backward_fn) {
-			v.impl()->grad.zero_();
+			if (v.impl()->grad.shape() != v.impl()->data.shape()) {
+				v.impl()->grad = Tensor(v.impl()->data.shape(), 0.0f);
+			} else {
+				v.impl()->grad.zero_();
+			}
 		}
 	}
-	std::fill(impl_->grad.data().begin(), impl_->grad.data().end(), 1.0f);
+	if (impl_->grad.shape() != impl_->data.shape()) {
+		impl_->grad = Tensor(impl_->data.shape(), 1.0f);
+	} else {
+		std::fill(impl_->grad.data().begin(), impl_->grad.data().end(), 1.0f);
+	}
 
 	for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
 		if (it->impl()->backward_fn) {
