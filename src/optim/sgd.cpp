@@ -25,12 +25,13 @@ SGD::SGD(std::vector<Value> params, float lr, float momentum)
 
 void SGD::step() {
 	for (size_t i = 0; i < params_.size(); i++) {
-		Tensor update = params_[i].grad();
 		if (momentum_ > 0.0f) {
-			velocity_[i] = add(scale(velocity_[i], momentum_), params_[i].grad());
-			update = velocity_[i];
+			velocity_[i] *= momentum_;
+			velocity_[i] += params_[i].grad();
+			params_[i].data() -= velocity_[i] * lr_;
+		} else {
+			params_[i].data() -= params_[i].grad() * lr_;
 		}
-		params_[i].data() = sub(params_[i].data(), scale(update, lr_));
 	}
 }
 
