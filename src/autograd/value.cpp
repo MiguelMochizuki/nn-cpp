@@ -6,6 +6,7 @@
 
 #include "nn/autograd/value.hpp"
 
+#include <algorithm>
 #include <unordered_set>
 
 namespace nn {
@@ -38,7 +39,7 @@ Tensor& Value::grad() const { return impl_->grad; }
 bool Value::requires_grad() const { return impl_->requires_grad; }
 NodeImpl* Value::impl() const { return impl_.get(); }
 
-void Value::zero_grad() const { impl_->grad = Tensor(impl_->data.shape(), 0.0f); }
+void Value::zero_grad() const { impl_->grad.zero_(); }
 
 size_t Value::live_node_count() { return g_live_node_count; }
 
@@ -78,10 +79,10 @@ void Value::backward() const {
 	// tested default (spec §5).
 	for (const Value& v : topo_order) {
 		if (v.impl()->backward_fn) {
-			v.impl()->grad = Tensor(v.impl()->data.shape(), 0.0f);
+			v.impl()->grad.zero_();
 		}
 	}
-	impl_->grad = Tensor(impl_->data.shape(), 1.0f);
+	std::fill(impl_->grad.data().begin(), impl_->grad.data().end(), 1.0f);
 
 	for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
 		if (it->impl()->backward_fn) {
