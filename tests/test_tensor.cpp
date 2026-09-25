@@ -218,3 +218,63 @@ TEST_CASE("matmul inner dimension mismatch throws") {
 	Tensor b({4, 2});
 	CHECK_THROWS_AS(matmul(a, b), TensorShapeError);
 }
+
+TEST_CASE("operator+ - * / match free functions") {
+	Tensor a({2}, std::vector<float>{6, 8});
+	Tensor b({2}, std::vector<float>{2, 4});
+	CHECK((a + b).get({0}) == 8.0f);
+	CHECK((a - b).get({0}) == 4.0f);
+	CHECK((a * b).get({1}) == 32.0f);
+	CHECK((a / b).get({0}) == 3.0f);
+}
+
+TEST_CASE("operator* with scalar, both orders") {
+	Tensor a({2}, std::vector<float>{1, 2});
+	CHECK((a * 3.0f).get({1}) == 6.0f);
+	CHECK((3.0f * a).get({1}) == 6.0f);
+}
+
+TEST_CASE("unary operator- negates every element") {
+	Tensor a({2}, std::vector<float>{1, -2});
+	Tensor n = -a;
+	CHECK(n.get({0}) == -1.0f);
+	CHECK(n.get({1}) == 2.0f);
+}
+
+TEST_CASE("compound assignment operators mutate in place") {
+	Tensor a({2}, std::vector<float>{6, 8});
+	Tensor b({2}, std::vector<float>{2, 4});
+	a += b;
+	CHECK(a.get({0}) == 8.0f);
+	a -= b;
+	CHECK(a.get({0}) == 6.0f);
+	a *= b;
+	CHECK(a.get({0}) == 12.0f);
+	a /= b;
+	CHECK(a.get({0}) == doctest::Approx(6.0f));
+	a *= 2.0f;
+	CHECK(a.get({0}) == doctest::Approx(12.0f));
+}
+
+TEST_CASE("compound assignment with different element count throws") {
+	Tensor a({2});
+	Tensor b({3});
+	CHECK_THROWS_AS(a += b, TensorShapeError);
+	CHECK_THROWS_AS(a -= b, TensorShapeError);
+	CHECK_THROWS_AS(a *= b, TensorShapeError);
+	CHECK_THROWS_AS(a /= b, TensorShapeError);
+}
+
+TEST_CASE("compound assignment with same element count but different shape throws") {
+	Tensor a({2, 3});
+	Tensor b({3, 2});
+	CHECK_THROWS_AS(a += b, TensorShapeError);
+	Tensor c({6});
+	CHECK_THROWS_AS(a += c, TensorShapeError);
+}
+
+TEST_CASE("zero_ sets every element to zero in place") {
+	Tensor a({3}, 5.0f);
+	a.zero_();
+	for (float v : a.data()) CHECK(v == 0.0f);
+}

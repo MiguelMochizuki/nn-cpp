@@ -139,6 +139,39 @@ float& Tensor::at(const std::vector<size_t>& idx) { return data_[flat_index(idx)
 const std::vector<float>& Tensor::data() const { return data_; }
 std::vector<float>& Tensor::data() { return data_; }
 
+Tensor& Tensor::operator+=(const Tensor& other) {
+	if (shape_ != other.shape_) throw TensorShapeError();
+	for (size_t i = 0; i < data_.size(); i++) data_[i] += other.data_[i];
+	return *this;
+}
+
+Tensor& Tensor::operator-=(const Tensor& other) {
+	if (shape_ != other.shape_) throw TensorShapeError();
+	for (size_t i = 0; i < data_.size(); i++) data_[i] -= other.data_[i];
+	return *this;
+}
+
+Tensor& Tensor::operator*=(const Tensor& other) {
+	if (shape_ != other.shape_) throw TensorShapeError();
+	for (size_t i = 0; i < data_.size(); i++) data_[i] *= other.data_[i];
+	return *this;
+}
+
+Tensor& Tensor::operator/=(const Tensor& other) {
+	if (shape_ != other.shape_) throw TensorShapeError();
+	for (size_t i = 0; i < data_.size(); i++) data_[i] /= other.data_[i];
+	return *this;
+}
+
+Tensor& Tensor::operator*=(float scalar) {
+	for (float& v : data_) v *= scalar;
+	return *this;
+}
+
+void Tensor::zero_() {
+	std::fill(data_.begin(), data_.end(), 0.0f);
+}
+
 Tensor Tensor::reshape(std::vector<size_t> new_shape) const {
 	if (product(new_shape) != data_.size()) {
 		throw TensorShapeError();
@@ -344,5 +377,13 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
 	}
 	return out;
 }
+
+Tensor operator+(const Tensor& a, const Tensor& b) { return add(a, b); }
+Tensor operator-(const Tensor& a, const Tensor& b) { return sub(a, b); }
+Tensor operator*(const Tensor& a, const Tensor& b) { return mul(a, b); }
+Tensor operator/(const Tensor& a, const Tensor& b) { return div(a, b); }
+Tensor operator*(const Tensor& a, float scalar) { return scale(a, scalar); }
+Tensor operator*(float scalar, const Tensor& a) { return scale(a, scalar); }
+Tensor operator-(const Tensor& a) { return scale(a, -1.0f); }
 
 }  // namespace nn

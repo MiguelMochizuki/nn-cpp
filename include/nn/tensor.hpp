@@ -142,6 +142,63 @@ public:
 	 */
 	std::vector<float>& data();
 
+	/* Public, in-place elementwise addition, same shape only
+	 *
+	 * Parameters:
+	 * Tensor other: operand; must have the exact same shape as this tensor
+	 *
+	 * Returns Tensor&: *this, each element incremented by the matching element of other;
+	 * throws TensorShapeError if shapes differ
+	 */
+	Tensor& operator+=(const Tensor& other);
+
+	/* Public, in-place elementwise subtraction, same shape only
+	 *
+	 * Parameters:
+	 * Tensor other: operand; must have the exact same shape as this tensor
+	 *
+	 * Returns Tensor&: *this, each element decremented by the matching element of other;
+	 * throws TensorShapeError if shapes differ
+	 */
+	Tensor& operator-=(const Tensor& other);
+
+	/* Public, in-place elementwise multiplication, same shape only
+	 *
+	 * Parameters:
+	 * Tensor other: operand; must have the exact same shape as this tensor
+	 *
+	 * Returns Tensor&: *this, each element multiplied by the matching element of other;
+	 * throws TensorShapeError if shapes differ
+	 */
+	Tensor& operator*=(const Tensor& other);
+
+	/* Public, in-place elementwise division, same shape only
+	 *
+	 * Parameters:
+	 * Tensor other: operand; must have the exact same shape as this tensor
+	 *
+	 * Returns Tensor&: *this, each element divided by the matching element of other;
+	 * throws TensorShapeError if shapes differ
+	 */
+	Tensor& operator/=(const Tensor& other);
+
+	/* Public, in-place scalar multiplication
+	 *
+	 * Parameters:
+	 * float scalar: multiplier
+	 *
+	 * Returns Tensor&: *this, every element multiplied by scalar
+	 */
+	Tensor& operator*=(float scalar);
+
+	/* Public, set every element to zero in place
+	 *
+	 * Parameters: none
+	 *
+	 * Returns void: none
+	 */
+	void zero_();
+
 	/* Public, reshape to new dimensions without changing row-major element order
 	 *
 	 * Parameters:
@@ -309,5 +366,24 @@ Tensor scale(const Tensor& a, float scalar);
  * the K dimensions differ, or if the leading dimensions don't broadcast
  */
 Tensor matmul(const Tensor& a, const Tensor& b);
+
+/* Public, elementwise addition operator, alias for add(a, b) */
+Tensor operator+(const Tensor& a, const Tensor& b);
+
+/* Public, elementwise subtraction operator, alias for sub(a, b) */
+Tensor operator-(const Tensor& a, const Tensor& b);
+
+/* Public, elementwise multiplication operator, alias for mul(a, b) */
+Tensor operator*(const Tensor& a, const Tensor& b);
+
+/* Public, elementwise division operator, alias for div(a, b) */
+Tensor operator/(const Tensor& a, const Tensor& b);
+
+/* Public, scalar multiplication operator, alias for scale(a, scalar) */
+Tensor operator*(const Tensor& a, float scalar);
+Tensor operator*(float scalar, const Tensor& a);
+
+/* Public, negation operator, alias for scale(a, -1.0f) */
+Tensor operator-(const Tensor& a);
 
 }  // namespace nn
