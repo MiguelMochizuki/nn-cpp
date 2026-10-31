@@ -83,6 +83,22 @@ Run the built-in version of this example:
 
 The directory must contain the four standard MNIST files: `train-images-idx3-ubyte`, `train-labels-idx1-ubyte`, `t10k-images-idx3-ubyte`, `t10k-labels-idx1-ubyte`. These are not downloaded automatically — obtain them from an MNIST mirror and point the program at the directory holding them.
 
+### Saving and resuming
+
+`save_checkpoint` writes a model's parameters, an optimizer's state (SGD learning rate, momentum and velocity) and a step counter of your choosing to one file; `load_checkpoint` restores them.
+
+```cpp
+#include "nn/checkpoint.hpp"
+
+nn::save_checkpoint("model.ckpt", model, &optimizer, epoch);
+
+// later, on any machine: rebuild the same model in code, then load into it
+int64_t epoch = nn::load_checkpoint("model.ckpt", model, &optimizer);   // resume training
+nn::load_checkpoint("model.ckpt", model);                               // inference only
+```
+
+The file is little-endian with fixed-width integers and IEEE-754 floats, so it loads identically anywhere. Parameters are stored by name (`0.weight`, `2.bias`, ...); loading checks every name and shape first and throws `std::runtime_error` naming what differs, leaving the model untouched. The architecture itself is not stored, so you must rebuild the same model in code. Layers without parameters leave no trace, so swapping `ReLU` for `Tanh` at the same position is not detected. Resuming does not restore `DataLoader` shuffle order.
+
 ### Using your own data
 
 `Dataset` is a two-method interface (`size()`, `get(index)`); implement it against whatever storage format you have, and `DataLoader` handles batching and shuffling for you:
@@ -151,6 +167,7 @@ Because every layer's `forward()` is expressed purely in terms of these differen
 | `nn/nn/flatten.hpp` | `Flatten` |
 | `nn/nn/activation.hpp` | `ReLU`, `Sigmoid`, `Tanh`, `Softmax(axis)` |
 | `nn/nn/sequential.hpp` | `Sequential` — `add(layer)`, `forward()`, `parameters()` |
+| `nn/checkpoint.hpp` | `save_checkpoint(path, model, optimizer*, step)`, `load_checkpoint(path, model, optimizer*)` |
 | `nn/nn/loss.hpp` | `cross_entropy_loss(logits, targets)`, `mse_loss(predictions, targets)` |
 | `nn/optim/optimizer.hpp` | `Optimizer` — base interface (`step()`, `zero_grad()`) |
 | `nn/optim/sgd.hpp` | `SGD(params, lr, momentum=0)` |

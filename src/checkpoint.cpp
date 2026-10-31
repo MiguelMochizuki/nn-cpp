@@ -146,9 +146,12 @@ Entry tensor_entry(const std::string& name, const Tensor& t) {
 
 }  // namespace
 
-void save_checkpoint(const std::string& path, const Module& model, const Optimizer*, int64_t step) {
+void save_checkpoint(const std::string& path, const Module& model, const Optimizer* optimizer, int64_t step) {
 	std::vector<Entry> entries;
 	for (const auto& p : model.named_parameters()) entries.push_back(tensor_entry("model." + p.first, p.second.data()));
+	if (optimizer) {
+		for (const auto& st : optimizer->state()) entries.push_back(tensor_entry("optim." + st.first, st.second));
+	}
 	Entry s;
 	s.name = "step";
 	s.is_int = true;
@@ -175,7 +178,7 @@ void save_checkpoint(const std::string& path, const Module& model, const Optimiz
 	}
 }
 
-int64_t load_checkpoint(const std::string& path, Module& model, Optimizer*) {
+int64_t load_checkpoint(const std::string& path, Module& model, Optimizer* optimizer) {
 	std::ifstream in(path, std::ios::binary);
 	if (!in) throw std::runtime_error("load_checkpoint: cannot open " + path);
 	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -187,12 +190,14 @@ int64_t load_checkpoint(const std::string& path, Module& model, Optimizer*) {
 	for (const auto& p : params) expected.insert("model." + p.first);
 	int64_t step = 0;
 	bool has_step = false;
+	OptimizerState optimizer_state;
 	for (const Entry& e : entries) {
 		if (e.name == "step" && e.is_int) {
 			step = e.ivalue;
 			has_step = true;
 		} else if (e.name.rfind("optim.", 0) == 0) {
-			continue;
+			if (e.is_int) problems += " bad-kind:" + e.name;
+			else optimizer_state.emplace_back(e.name.substr(6), Tensor(e.shape, e.data));
 		} else if (!expected.count(e.name)) {
 			problems += " unexpected:" + e.name;
 		}
@@ -206,6 +211,11 @@ int64_t load_checkpoint(const std::string& path, Module& model, Optimizer*) {
 	}
 	if (!problems.empty()) throw std::runtime_error("load_checkpoint: checkpoint does not match model:" + problems);
 
+	// The optimizer validates all-or-nothing and throws before any model weight is touched.
+	if (optimizer) {
+		if (optimizer_state.empty()) throw std::runtime_error("load_checkpoint: checkpoint has no optimizer state");
+		optimizer->load_state(optimizer_state);
+	}
 	for (const auto& p : params) {
 		std::string name = "model." + p.first;
 		auto it = std::find_if(entries.begin(), entries.end(), [&](const Entry& e) { return e.name == name; });

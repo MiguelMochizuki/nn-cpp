@@ -8,7 +8,9 @@
 #include "nn/checkpoint.hpp"
 #include "nn/nn/activation.hpp"
 #include "nn/nn/linear.hpp"
+#include "nn/nn/loss.hpp"
 #include "nn/nn/sequential.hpp"
+#include "nn/optim/sgd.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -78,6 +80,17 @@ void check_rejected(const std::vector<uint8_t>& bytes) {
 	CHECK_THROWS_AS(load_checkpoint(PATH, m), std::runtime_error);
 	CHECK(snapshot(m) == before);
 	std::remove(PATH.c_str());
+}
+
+void train(Module& model, Optimizer& optimizer, int steps) {
+	Value x = Value::leaf(Tensor({4, 2}, std::vector<float>{0, 0, 0, 1, 1, 0, 1, 1}), false);
+	Value y = Value::leaf(Tensor({4, 1}, std::vector<float>{0, 1, 1, 0}), false);
+	for (int i = 0; i < steps; i++) {
+		Value loss = mse_loss(model.forward(x), y);
+		optimizer.zero_grad();
+		loss.backward();
+		optimizer.step();
+	}
 }
 
 }  // namespace
@@ -215,5 +228,57 @@ TEST_CASE("a failed save throws and keeps the previous checkpoint") {
 	CHECK(read_bytes(PATH) == original);
 	CHECK(load_checkpoint(PATH, b) == 5);
 	std::filesystem::remove_all(tmp);
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("resume equivalence: a loaded model and optimizer continue exactly like the original") {
+	Sequential a = make_mlp();
+	SGD opt_a(a.parameters(), 0.1f, 0.9f);
+	train(a, opt_a, 5);
+	save_checkpoint(PATH, a, &opt_a, 5);
+	train(a, opt_a, 5);
+
+	Sequential b = make_mlp();
+	SGD opt_b(b.parameters(), 0.7f, 0.0f);
+	CHECK(load_checkpoint(PATH, b, &opt_b) == 5);
+	train(b, opt_b, 5);
+	CHECK(snapshot(a) == snapshot(b));
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("inference-only load ignores optimizer entries") {
+	Sequential a = make_mlp(), b = make_mlp();
+	SGD opt(a.parameters(), 0.1f, 0.9f);
+	train(a, opt, 3);
+	save_checkpoint(PATH, a, &opt);
+	load_checkpoint(PATH, b);
+	CHECK(snapshot(a) == snapshot(b));
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("loading with an optimizer from a model-only file throws and changes nothing") {
+	Sequential a = make_mlp(), b = make_mlp();
+	save_checkpoint(PATH, a);
+	SGD opt(b.parameters(), 0.1f, 0.9f);
+	auto before = snapshot(b);
+	CHECK_THROWS_WITH_AS(load_checkpoint(PATH, b, &opt), doctest::Contains("optim"), std::runtime_error);
+	CHECK(snapshot(b) == before);
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("momentum 0 in the file overrides momentum 0.9 on the loading optimizer") {
+	Sequential a = make_mlp();
+	SGD opt_a(a.parameters(), 0.1f, 0.0f);
+	save_checkpoint(PATH, a, &opt_a);
+
+	Sequential c = make_mlp();
+	SGD opt_c(c.parameters(), 0.5f, 0.9f);
+	load_checkpoint(PATH, c, &opt_c);
+	for (const Value& q : c.parameters()) q.grad() = Tensor(q.data().shape(), 1.0f);
+	auto before = snapshot(c);
+	opt_c.step();
+	auto after = snapshot(c);
+	for (size_t i = 0; i < before.size(); i++)
+		for (size_t j = 0; j < before[i].size(); j++) CHECK(after[i][j] == doctest::Approx(before[i][j] - 0.1f));
 	std::remove(PATH.c_str());
 }
