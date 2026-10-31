@@ -33,4 +33,8 @@ Value Conv2d::forward(const Value& input) {
 
 std::vector<Value> Conv2d::parameters() const { return {weight_, bias_}; }
 
+std::vector<std::pair<std::string, Value>> Conv2d::named_parameters() const {
+	return {{"weight", weight_}, {"bias", bias_}};
+}
+
 }  // namespace nn

@@ -15,6 +15,8 @@
 #include "nn/autograd/ops.hpp"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 using namespace nn;
 
@@ -129,4 +131,37 @@ TEST_CASE("end-to-end gradcheck through a small Linear-ReLU-Linear network") {
 		auto f = [&model, &input](Value) { return sum(model.forward(input)); };
 		CHECK(gradcheck(f, p, 1e-3f, 0.1f));
 	}
+}
+
+static std::vector<std::string> names_of(const Module& m) {
+	std::vector<std::string> names;
+	for (const auto& entry : m.named_parameters()) names.push_back(entry.first);
+	return names;
+}
+
+TEST_CASE("named_parameters of Sequential are index-prefixed") {
+	Sequential m;
+	m.add(std::make_unique<Linear>(2, 3));
+	m.add(std::make_unique<ReLU>());
+	m.add(std::make_unique<Linear>(3, 1));
+	CHECK(names_of(m) == std::vector<std::string>{"0.weight", "0.bias", "2.weight", "2.bias"});
+}
+
+TEST_CASE("nested Sequential names compose") {
+	auto inner = std::make_unique<Sequential>();
+	inner->add(std::make_unique<Linear>(2, 2));
+	Sequential outer;
+	outer.add(std::move(inner));
+	CHECK(names_of(outer) == std::vector<std::string>{"0.0.weight", "0.0.bias"});
+}
+
+TEST_CASE("named_parameters and parameters list the same handles in the same order") {
+	Sequential m;
+	m.add(std::make_unique<Conv2d>(1, 2, 3));
+	m.add(std::make_unique<Flatten>());
+	m.add(std::make_unique<Linear>(2, 2));
+	auto named = m.named_parameters();
+	auto plain = m.parameters();
+	REQUIRE(named.size() == plain.size());
+	for (size_t i = 0; i < plain.size(); i++) CHECK(&named[i].second.data() == &plain[i].data());
 }

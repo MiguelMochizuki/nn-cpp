@@ -29,4 +29,8 @@ Value Linear::forward(const Value& input) {
 
 std::vector<Value> Linear::parameters() const { return {weight_, bias_}; }
 
+std::vector<std::pair<std::string, Value>> Linear::named_parameters() const {
+	return {{"weight", weight_}, {"bias", bias_}};
+}
+
 }  // namespace nn

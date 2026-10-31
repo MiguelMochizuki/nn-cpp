@@ -32,6 +32,7 @@ public:
 
 	Value forward(const Value& input) override;
 	std::vector<Value> parameters() const override;
+	std::vector<std::pair<std::string, Value>> named_parameters() const override;
 
 private:
 	std::vector<std::unique_ptr<Module>> layers_;

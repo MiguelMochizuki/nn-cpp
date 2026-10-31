@@ -27,4 +27,14 @@ std::vector<Value> Sequential::parameters() const {
 	return all_params;
 }
 
+std::vector<std::pair<std::string, Value>> Sequential::named_parameters() const {
+	std::vector<std::pair<std::string, Value>> all_params;
+	for (size_t i = 0; i < layers_.size(); i++) {
+		for (auto& entry : layers_[i]->named_parameters()) {
+			all_params.emplace_back(std::to_string(i) + "." + entry.first, entry.second);
+		}
+	}
+	return all_params;
+}
+
 }  // namespace nn
