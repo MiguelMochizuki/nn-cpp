@@ -27,7 +27,16 @@ Value Value::leaf(Tensor data, bool requires_grad) {
 	return Value(std::make_shared<NodeImpl>(std::move(data), requires_grad));
 }
 
+namespace {
+thread_local bool g_grad_enabled = true;
+}
+
+NoGradGuard::NoGradGuard() : previous_(g_grad_enabled) { g_grad_enabled = false; }
+NoGradGuard::~NoGradGuard() { g_grad_enabled = previous_; }
+bool NoGradGuard::grad_enabled() { return g_grad_enabled; }
+
 Value Value::node(Tensor data, std::vector<Value> parents, std::function<void(const Tensor&)> backward_fn) {
+	if (!g_grad_enabled) return leaf(std::move(data), false);
 	auto impl = std::make_shared<NodeImpl>(std::move(data), true);
 	impl->parents = std::move(parents);
 	impl->backward_fn = std::move(backward_fn);

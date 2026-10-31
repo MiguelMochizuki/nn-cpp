@@ -436,3 +436,32 @@ TEST_CASE("data() and grad() on a temporary Value return copies, on an lvalue re
 	Tensor kept = relu(Value::leaf(Tensor({1}, -2.0f), false)).data();
 	CHECK(kept.get({0}) == 0.0f);
 }
+
+TEST_CASE("NoGradGuard makes ops return graph-free leaves with identical values") {
+	Value w = Value::leaf(Tensor({2, 2}, std::vector<float>{1, -1, 2, 3}), true);
+	Value x = Value::leaf(Tensor({1, 2}, std::vector<float>{1, 2}), false);
+	Value tracked = relu(matmul(x, w));
+	REQUIRE(tracked.requires_grad());
+	REQUIRE(!tracked.impl()->parents.empty());
+
+	Value untracked = tracked;
+	{
+		NoGradGuard guard;
+		untracked = relu(matmul(x, w));
+	}
+	CHECK(!untracked.requires_grad());
+	CHECK(untracked.impl()->parents.empty());
+	CHECK(untracked.data().data() == tracked.data().data());
+}
+
+TEST_CASE("NoGradGuard restores tracking when it goes out of scope, including when nested") {
+	Value w = Value::leaf(Tensor({1}, 1.0f), true);
+	{
+		NoGradGuard outer;
+		{
+			NoGradGuard inner;
+		}
+		CHECK(!relu(w).requires_grad());
+	}
+	CHECK(relu(w).requires_grad());
+}

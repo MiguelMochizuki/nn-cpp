@@ -30,6 +30,34 @@ public:
 class Value;
 
 /*
+ * RAII scope that disables graph building on the current thread: while one is alive,
+ * Value::node returns a plain leaf with no parents and no backward rule, so evaluating a
+ * model for inference keeps no autograd graph. Guards nest; the previous mode is restored
+ * on destruction.
+ *
+ * Attributes:
+ * bool previous_: grad mode in effect before this guard
+ */
+class NoGradGuard {
+public:
+	NoGradGuard();
+	~NoGradGuard();
+	NoGradGuard(const NoGradGuard&) = delete;
+	NoGradGuard& operator=(const NoGradGuard&) = delete;
+
+	/* Public, whether ops currently build the autograd graph on this thread
+	 *
+	 * Parameters: none
+	 *
+	 * Returns bool: true unless a NoGradGuard is alive
+	 */
+	static bool grad_enabled();
+
+private:
+	bool previous_;
+};
+
+/*
  * Internal graph node state, jointly owned by every Value handle referencing it.
  * Edges point one direction only, child to parent, so the graph structure itself
  * cannot form a cycle; see nn::Value::node for the one rule that must hold to
