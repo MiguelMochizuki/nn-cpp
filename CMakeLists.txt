@@ -22,6 +22,7 @@ add_library(nn_core STATIC
 	src/nn/sequential.cpp
 	src/checkpoint.cpp
 	src/optim/sgd.cpp
+	src/optim/adam.cpp
 	src/data/dataloader.cpp
 )
 

@@ -10,6 +10,7 @@
 #include "nn/nn/linear.hpp"
 #include "nn/nn/loss.hpp"
 #include "nn/nn/sequential.hpp"
+#include "nn/optim/adam.hpp"
 #include "nn/optim/sgd.hpp"
 
 #include <cstdint>
@@ -280,5 +281,20 @@ TEST_CASE("momentum 0 in the file overrides momentum 0.9 on the loading optimize
 	auto after = snapshot(c);
 	for (size_t i = 0; i < before.size(); i++)
 		for (size_t j = 0; j < before[i].size(); j++) CHECK(after[i][j] == doctest::Approx(before[i][j] - 0.1f));
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("resume equivalence holds for Adam") {
+	Sequential a = make_mlp();
+	Adam opt_a(a.parameters(), 0.01f);
+	train(a, opt_a, 5);
+	save_checkpoint(PATH, a, &opt_a, 5);
+	train(a, opt_a, 5);
+
+	Sequential b = make_mlp();
+	Adam opt_b(b.parameters(), 0.5f);
+	load_checkpoint(PATH, b, &opt_b);
+	train(b, opt_b, 5);
+	CHECK(snapshot(a) == snapshot(b));
 	std::remove(PATH.c_str());
 }
