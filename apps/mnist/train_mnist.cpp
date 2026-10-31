@@ -22,6 +22,15 @@
 
 using namespace nn;
 
+/**
+ * Trains a small CNN on MNIST, printing the average loss per epoch and the test accuracy at the end
+ *
+ * Parameters:
+ * int argc: Argument count
+ * char** argv: argv[1] is the directory holding the four MNIST idx files
+ *
+ * Returns int: 0 on success, 1 on bad usage
+ */
 int main(int argc, char** argv) {
 	if (argc < 2) {
 		std::fprintf(stderr, "usage: %s <mnist_dir>\n", argv[0]);

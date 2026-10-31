@@ -12,6 +12,15 @@
 namespace nn {
 
 namespace {
+/**
+ * Bound of the uniform weight initialization, 1 / sqrt(fan_in)
+ *
+ * Parameters:
+ * size_t in_channels: Input channels
+ * size_t kernel_size: Side of the square kernel
+ *
+ * Returns float: Weights are drawn from [-limit, limit]
+ */
 float conv2d_init_limit(size_t in_channels, size_t kernel_size) {
 	float fan_in = static_cast<float>(in_channels * kernel_size * kernel_size);
 	return 1.0f / std::sqrt(fan_in);

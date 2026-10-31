@@ -13,6 +13,14 @@ namespace nn {
 
 namespace {
 
+/**
+ * Reads a big-endian 32-bit unsigned integer, the IDX header field format
+ *
+ * Parameters:
+ * std::ifstream& file: Stream positioned at the field; check file.good() afterwards for a short read
+ *
+ * Returns uint32_t: The decoded value
+ */
 uint32_t read_u32_be(std::ifstream& file) {
 	unsigned char bytes[4];
 	file.read(reinterpret_cast<char*>(bytes), 4);

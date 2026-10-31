@@ -302,6 +302,14 @@ private:
 	std::vector<size_t> strides_;
 	std::vector<float> data_;
 
+	/**
+	 * Converts a multi-dimensional index into an offset into data_
+	 *
+	 * Parameters:
+	 * const std::vector<size_t>& idx: Index along each axis
+	 *
+	 * Returns size_t: Row-major offset; throws TensorIndexError on a wrong rank or out-of-range index
+	 */
 	size_t flat_index(const std::vector<size_t>& idx) const;
 };
 

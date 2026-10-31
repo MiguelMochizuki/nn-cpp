@@ -11,9 +11,25 @@ The library is organized in four layers, each building on the one before it:
 - **`Tensor`** — a general N-dimensional `float` array with row-major storage: construction, indexing, reshaping, broadcasting arithmetic, reductions, and batched matrix multiplication.
 - **Autograd** — a `Value` handle wraps a `Tensor` in a computation graph. Differentiable operations (`add`, `matmul`, `conv2d`, `relu`, `cross_entropy_loss`, ...) build the graph as they run; `backward()` walks it in reverse to compute gradients.
 - **`nn`** — layers (`Linear`, `Conv2d`, `MaxPool2d`, `Flatten`, activations) and the `Sequential` container that chains them. A layer only implements `forward()`; gradients are derived automatically by the autograd engine underneath.
-- **`optim` and `data`** — an `SGD` optimizer, and a `Dataset`/`DataLoader` pair for batching and shuffling training data from any source you implement.
+- **`optim` and `data`** — `SGD` and `Adam` optimizers, checkpoint save/load, and a `Dataset`/`DataLoader` pair for batching and shuffling training data from any source you implement.
 
 The design takes inspiration from PyTorch's vocabulary (`Module`, `Sequential`, `Optimizer`) without depending on it or anything else — every operation here is implemented directly.
+
+## Project Organization
+
+```
+apps/           examples: xor/ (XOR demo) and mnist/ (IDX loader, MNIST trainer and its tests)
+cmake/          FetchDoctest.cmake (fetches doctest for the tests)
+include/nn/
+  autograd/     Value and the differentiable operations
+  nn/           Module, layers, losses and Sequential
+  optim/        Optimizer, SGD and Adam
+  data/         Dataset and DataLoader
+  tensor.hpp    the Tensor type
+  checkpoint.hpp  save and load of weights and optimizer state
+src/            implementations, mirroring include/nn
+tests/          unit tests (doctest) and the gradient-check helper
+```
 
 ## Build
 
@@ -178,6 +194,10 @@ Because every layer's `forward()` is expressed purely in terms of these differen
 ## Scope
 
 This project targets clarity and correctness over raw throughput: it uses single-threaded, cache-friendly loops rather than multi-threading or SIMD intrinsics. The tensor's dtype is fixed to `float`; a runtime-selectable dtype is a natural future extension but is not implemented here.
+
+## Documentation Conventions
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

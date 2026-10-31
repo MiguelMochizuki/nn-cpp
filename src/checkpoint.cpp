@@ -35,10 +35,26 @@ struct Entry {
 	std::vector<float> data;
 };
 
+/**
+ * Appends an unsigned integer in little-endian byte order
+ *
+ * Parameters:
+ * std::vector<uint8_t>& out: Buffer to append to
+ * uint64_t v: Value to write
+ * int bytes: Number of bytes to emit
+ */
 void put_uint(std::vector<uint8_t>& out, uint64_t v, int bytes) {
 	for (int i = 0; i < bytes; i++) out.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
 }
 
+/**
+ * Serializes checkpoint entries to the file format (magic, version, count, then entries)
+ *
+ * Parameters:
+ * const std::vector<Entry>& entries: Named integers and tensors to store
+ *
+ * Returns std::vector<uint8_t>: The encoded bytes
+ */
 std::vector<uint8_t> encode(const std::vector<Entry>& entries) {
 	std::vector<uint8_t> out(MAGIC, MAGIC + 4);
 	put_uint(out, VERSION, 4);
@@ -93,6 +109,15 @@ private:
 	size_t pos_ = 0;
 };
 
+/**
+ * Parses checkpoint bytes back into entries
+ *
+ * Parameters:
+ * const std::vector<uint8_t>& bytes: Whole file contents
+ *
+ * Returns std::vector<Entry>: Decoded entries; throws std::runtime_error on a bad magic number,
+ * unsupported version, duplicate name or truncated data
+ */
 std::vector<Entry> decode(const std::vector<uint8_t>& bytes) {
 	Reader r(bytes);
 	if (r.str(4) != std::string(MAGIC, 4)) throw std::runtime_error("load_checkpoint: not a checkpoint file");
@@ -136,6 +161,15 @@ std::vector<Entry> decode(const std::vector<uint8_t>& bytes) {
 	return entries;
 }
 
+/**
+ * Wraps a tensor as a named checkpoint entry
+ *
+ * Parameters:
+ * const std::string& name: Entry name
+ * const Tensor& t: Tensor to store
+ *
+ * Returns Entry: Entry holding the tensor's shape and data
+ */
 Entry tensor_entry(const std::string& name, const Tensor& t) {
 	Entry e;
 	e.name = name;

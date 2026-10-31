@@ -16,6 +16,14 @@ namespace nn {
 
 namespace {
 
+/**
+ * Computes row-major strides for a shape
+ *
+ * Parameters:
+ * const std::vector<size_t>& shape: Dimensions
+ *
+ * Returns std::vector<size_t>: Elements to skip per step along each axis
+ */
 std::vector<size_t> compute_strides(const std::vector<size_t>& shape) {
 	std::vector<size_t> strides(shape.size());
 	size_t acc = 1;
@@ -26,10 +34,27 @@ std::vector<size_t> compute_strides(const std::vector<size_t>& shape) {
 	return strides;
 }
 
+/**
+ * Multiplies all dimensions of a shape
+ *
+ * Parameters:
+ * const std::vector<size_t>& shape: Dimensions
+ *
+ * Returns size_t: Element count (1 for an empty shape)
+ */
 size_t product(const std::vector<size_t>& shape) {
 	return std::accumulate(shape.begin(), shape.end(), size_t{1}, std::multiplies<size_t>());
 }
 
+/**
+ * Removes one axis from a shape
+ *
+ * Parameters:
+ * const std::vector<size_t>& shape: Dimensions
+ * size_t axis: Axis to remove
+ *
+ * Returns std::vector<size_t>: Shape with one fewer dimension
+ */
 std::vector<size_t> drop_axis(const std::vector<size_t>& shape, size_t axis) {
 	std::vector<size_t> out;
 	out.reserve(shape.size() - 1);
@@ -39,6 +64,16 @@ std::vector<size_t> drop_axis(const std::vector<size_t>& shape, size_t axis) {
 	return out;
 }
 
+/**
+ * Converts a flat element offset into a multi-dimensional index
+ *
+ * Parameters:
+ * size_t flat: Offset into the data array
+ * const std::vector<size_t>& strides: Row-major strides of the tensor
+ * const std::vector<size_t>& shape: Dimensions of the tensor
+ *
+ * Returns std::vector<size_t>: Index along each axis
+ */
 std::vector<size_t> unravel_index(size_t flat, const std::vector<size_t>& strides, const std::vector<size_t>& shape) {
 	std::vector<size_t> idx(shape.size());
 	for (size_t i = 0; i < shape.size(); i++) {
@@ -47,6 +82,15 @@ std::vector<size_t> unravel_index(size_t flat, const std::vector<size_t>& stride
 	return idx;
 }
 
+/**
+ * Computes the numpy-style broadcast shape of two shapes
+ *
+ * Parameters:
+ * const std::vector<size_t>& a: First shape
+ * const std::vector<size_t>& b: Second shape
+ *
+ * Returns std::vector<size_t>: Broadcast shape; throws TensorShapeError if the shapes are incompatible
+ */
 std::vector<size_t> broadcast_shape(const std::vector<size_t>& a, const std::vector<size_t>& b) {
 	size_t rank = std::max(a.size(), b.size());
 	std::vector<size_t> out(rank);
@@ -73,6 +117,16 @@ size_t broadcast_offset(const std::vector<size_t>& out_idx, const std::vector<si
 	return offset;
 }
 
+/**
+ * Applies a binary operation elementwise, broadcasting when the shapes differ
+ *
+ * Parameters:
+ * const Tensor& a: Left operand
+ * const Tensor& b: Right operand
+ * Op op: Callable taking two floats and returning a float
+ *
+ * Returns Tensor: Result with the broadcast shape
+ */
 template <typename Op>
 Tensor elementwise(const Tensor& a, const Tensor& b, Op op) {
 	if (a.shape() == b.shape()) {

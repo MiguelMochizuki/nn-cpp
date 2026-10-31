@@ -13,6 +13,15 @@ namespace nn {
 
 namespace {
 
+/**
+ * Sums a gradient over the axes that broadcasting expanded, so it matches the operand's shape
+ *
+ * Parameters:
+ * const Tensor& grad: Gradient with the broadcast (output) shape
+ * const std::vector<size_t>& target_shape: Shape of the operand that received the broadcast
+ *
+ * Returns Tensor: Gradient reduced to target_shape
+ */
 Tensor sum_to_shape(const Tensor& grad, const std::vector<size_t>& target_shape) {
 	Tensor result = grad;
 	while (result.ndim() > target_shape.size()) {
@@ -34,12 +43,34 @@ struct Conv2dOutputSize {
 	size_t w_out;
 };
 
+/**
+ * Computes the spatial output size of a 2D convolution or pooling window
+ *
+ * Parameters:
+ * size_t h, size_t w: Input height and width
+ * size_t kh, size_t kw: Kernel height and width
+ * size_t stride: Step between windows
+ * size_t padding: Zero padding added on each side
+ *
+ * Returns Conv2dOutputSize: Output height and width
+ */
 Conv2dOutputSize conv2d_output_size(size_t h, size_t w, size_t kh, size_t kw, size_t stride, size_t padding) {
 	size_t h_out = (h + 2 * padding - kh) / stride + 1;
 	size_t w_out = (w + 2 * padding - kw) / stride + 1;
 	return {h_out, w_out};
 }
 
+/**
+ * Unrolls every convolution window of x into a column, so the convolution becomes a matmul
+ *
+ * Parameters:
+ * const Tensor& x: Input of shape (N, Cin, H, W)
+ * size_t kh, size_t kw: Kernel height and width
+ * size_t stride: Step between windows
+ * size_t padding: Zero padding added on each side
+ *
+ * Returns Tensor: Columns of shape (N, Cin * kh * kw, h_out * w_out)
+ */
 Tensor im2col(const Tensor& x, size_t kh, size_t kw, size_t stride, size_t padding) {
 	size_t N = x.shape()[0], Cin = x.shape()[1], H = x.shape()[2], W = x.shape()[3];
 	auto [h_out, w_out] = conv2d_output_size(H, W, kh, kw, stride, padding);
@@ -112,6 +143,14 @@ Tensor col2im(const Tensor& col_grad, const std::vector<size_t>& x_shape, size_t
 	return grad_x;
 }
 
+/**
+ * Swaps the last two axes of a tensor
+ *
+ * Parameters:
+ * const Tensor& t: Tensor with at least two dimensions
+ *
+ * Returns Tensor: Transposed copy
+ */
 Tensor transpose_last_two(const Tensor& t) {
 	std::vector<size_t> perm(t.ndim());
 	for (size_t i = 0; i < t.ndim(); i++) perm[i] = i;
@@ -119,6 +158,15 @@ Tensor transpose_last_two(const Tensor& t) {
 	return t.transpose(perm);
 }
 
+/**
+ * Inserts a size-1 axis, used to re-broadcast a reduced gradient
+ *
+ * Parameters:
+ * const Tensor& t: Tensor to reshape
+ * int axis: Position of the new axis
+ *
+ * Returns Tensor: Reshaped tensor with one more dimension
+ */
 Tensor insert_axis(const Tensor& t, int axis) {
 	std::vector<size_t> new_shape = t.shape();
 	new_shape.insert(new_shape.begin() + axis, 1);

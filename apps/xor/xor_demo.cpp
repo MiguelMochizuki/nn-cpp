@@ -15,6 +15,11 @@
 
 using namespace nn;
 
+/**
+ * Trains a small network on XOR, printing the loss per epoch and the final predictions
+ *
+ * Returns int: 0 on success
+ */
 int main() {
 	Tensor x_data({4, 2}, std::vector<float>{0, 0, 0, 1, 1, 0, 1, 1});
 	Tensor y_data({4, 1}, std::vector<float>{0, 1, 1, 0});
