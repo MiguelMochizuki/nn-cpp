@@ -20,6 +20,7 @@ add_library(nn_core STATIC
 	src/nn/pool2d.cpp
 	src/nn/activation.cpp
 	src/nn/sequential.cpp
+	src/checkpoint.cpp
 	src/optim/sgd.cpp
 	src/data/dataloader.cpp
 )

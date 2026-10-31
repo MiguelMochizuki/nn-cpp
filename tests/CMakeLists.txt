@@ -4,6 +4,7 @@ add_executable(nn_tests
 	test_nn.cpp
 	test_optim.cpp
 	test_dataloader.cpp
+	test_checkpoint.cpp
 )
 target_link_libraries(nn_tests PRIVATE nn_core doctest::doctest)
 
