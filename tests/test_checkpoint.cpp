@@ -21,6 +21,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -29,7 +30,8 @@ using namespace nn;
 
 namespace {
 
-const std::string PATH = "ckpt_test.bin";
+// Unique per process: ctest runs each test case as its own process, in parallel with -j
+const std::string PATH = "ckpt_test_" + std::to_string(std::random_device{}()) + ".bin";
 
 Sequential make_mlp(size_t hidden = 3) {
 	Sequential m;
