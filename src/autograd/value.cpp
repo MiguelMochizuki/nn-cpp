@@ -34,8 +34,10 @@ Value Value::node(Tensor data, std::vector<Value> parents, std::function<void(co
 	return Value(impl);
 }
 
-Tensor& Value::data() const { return impl_->data; }
-Tensor& Value::grad() const { return impl_->grad; }
+Tensor& Value::data() const& { return impl_->data; }
+Tensor Value::data() && { return impl_->data; }
+Tensor& Value::grad() const& { return impl_->grad; }
+Tensor Value::grad() && { return impl_->grad; }
 bool Value::requires_grad() const { return impl_->requires_grad; }
 NodeImpl* Value::impl() const { return impl_.get(); }
 

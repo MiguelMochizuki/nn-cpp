@@ -10,6 +10,8 @@
 #include "gradcheck.hpp"
 
 #include <cmath>
+#include <type_traits>
+#include <utility>
 
 using namespace nn;
 
@@ -424,4 +426,13 @@ TEST_CASE("unary negate and negative-scalar multiply carry correct sign through 
 	Value scaled = x2 * -3.0f;
 	scaled.backward();
 	CHECK(x2.grad().get({0}) == doctest::Approx(-3.0f));
+}
+
+TEST_CASE("data() and grad() on a temporary Value return copies, on an lvalue return references") {
+	static_assert(std::is_same<decltype(std::declval<Value&>().data()), Tensor&>::value, "lvalue data() is a reference");
+	static_assert(std::is_same<decltype(std::declval<Value>().data()), Tensor>::value, "temporary data() is a copy");
+	static_assert(std::is_same<decltype(std::declval<Value&>().grad()), Tensor&>::value, "lvalue grad() is a reference");
+	static_assert(std::is_same<decltype(std::declval<Value>().grad()), Tensor>::value, "temporary grad() is a copy");
+	Tensor kept = relu(Value::leaf(Tensor({1}, -2.0f), false)).data();
+	CHECK(kept.get({0}) == 0.0f);
 }

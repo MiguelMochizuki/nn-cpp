@@ -92,7 +92,16 @@ public:
 	 *
 	 * Returns Tensor&: reference to the node's data
 	 */
-	Tensor& data() const;
+	Tensor& data() const&;
+
+	/* Public, forward value of a temporary Value, by copy: a reference would dangle once the
+	 * temporary (e.g. model.forward(x)) and its node are destroyed at the end of the expression
+	 *
+	 * Parameters: none
+	 *
+	 * Returns Tensor: copy of the node's data
+	 */
+	Tensor data() &&;
 
 	/* Public, accumulated gradient, read-write
 	 *
@@ -100,7 +109,15 @@ public:
 	 *
 	 * Returns Tensor&: reference to the node's grad
 	 */
-	Tensor& grad() const;
+	Tensor& grad() const&;
+
+	/* Public, accumulated gradient of a temporary Value, by copy; see data() &&
+	 *
+	 * Parameters: none
+	 *
+	 * Returns Tensor: copy of the node's grad
+	 */
+	Tensor grad() &&;
 
 	/* Public, whether this node participates in backward
 	 *
