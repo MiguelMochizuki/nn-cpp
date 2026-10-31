@@ -33,6 +33,8 @@ public:
 	SGD(std::vector<Value> params, float lr, float momentum = 0.0f);
 
 	void step() override;
+	OptimizerState state() const override;
+	void load_state(const OptimizerState& state) override;
 
 private:
 	float lr_;

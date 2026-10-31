@@ -8,9 +8,14 @@
 
 #include "nn/autograd/value.hpp"
 
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace nn {
+
+/* Named tensors describing an optimizer's resumable state (hyperparameters, buffers). */
+using OptimizerState = std::vector<std::pair<std::string, Tensor>>;
 
 /*
  * Base interface for optimizers. Holds the parameter set it updates; operates
@@ -48,7 +53,29 @@ public:
 	 */
 	void zero_grad();
 
+	/* Public, snapshot the state needed to resume training
+	 *
+	 * Parameters: none
+	 *
+	 * Returns OptimizerState: named tensors; empty for a stateless optimizer
+	 */
+	virtual OptimizerState state() const { return {}; }
+
+	/* Public, restore a snapshot produced by state() of the same optimizer type over a
+	 * parameter set with the same shapes; all-or-nothing
+	 *
+	 * Parameters:
+	 * OptimizerState state: snapshot to restore
+	 *
+	 * Returns void: none; throws std::runtime_error naming missing, unexpected or
+	 * shape-mismatched entries, leaving this optimizer unchanged
+	 */
+	virtual void load_state(const OptimizerState& state);
+
 protected:
+	/* Protected, throw std::runtime_error unless got has exactly the names and shapes of expected */
+	static void check_state(const OptimizerState& got, const OptimizerState& expected);
+
 	std::vector<Value> params_;
 };
 
