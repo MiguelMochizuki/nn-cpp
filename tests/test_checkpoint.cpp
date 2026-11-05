@@ -11,8 +11,10 @@
 #include "nn/nn/loss.hpp"
 #include "nn/nn/sequential.hpp"
 #include "nn/optim/adam.hpp"
+#include "nn/optim/adamw.hpp"
 #include "nn/optim/sgd.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -299,4 +301,40 @@ TEST_CASE("resume equivalence holds for Adam") {
 	train(b, opt_b, 5);
 	CHECK(snapshot(a) == snapshot(b));
 	std::remove(PATH.c_str());
+}
+
+TEST_CASE("checkpoint round trip restores the learning rate for SGD, Adam and AdamW") {
+	Sequential a = make_mlp();
+	SGD s(a.parameters(), 0.1f, 0.9f);
+	s.set_lr(0.0125f);
+	save_checkpoint(PATH, a, &s);
+	SGD s2(a.parameters(), 0.5f, 0.9f);
+	load_checkpoint(PATH, a, &s2);
+	CHECK(s2.lr() == 0.0125f);
+
+	AdamW w(a.parameters(), 0.01f);
+	w.set_lr(0.003f);
+	save_checkpoint(PATH, a, &w);
+	AdamW w2(a.parameters(), 0.5f);
+	load_checkpoint(PATH, a, &w2);
+	CHECK(w2.lr() == 0.003f);
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("an optimizer snapshot without lr loads and keeps the current lr") {
+	Sequential a = make_mlp();
+	Adam opt(a.parameters(), 0.01f);
+	OptimizerState st = opt.state();
+	st.erase(std::remove_if(st.begin(), st.end(), [](const auto& e) { return e.first == "lr"; }), st.end());
+	Adam other(a.parameters(), 0.25f);
+	other.load_state(st);
+	CHECK(other.lr() == 0.25f);
+	SGD sgd(a.parameters(), 0.1f, 0.5f);
+	OptimizerState ss = sgd.state();
+	ss.erase(std::remove_if(ss.begin(), ss.end(), [](const auto& e) { return e.first == "lr"; }), ss.end());
+	SGD sgd2(a.parameters(), 0.7f, 0.0f);
+	sgd2.load_state(ss);
+	CHECK(sgd2.lr() == 0.7f);
+	ss.emplace_back("bogus", Tensor({1}, 1.0f));
+	CHECK_THROWS_AS(sgd2.load_state(ss), std::runtime_error);
 }

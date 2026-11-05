@@ -19,6 +19,17 @@ void Optimizer::zero_grad() {
 	for (Value& p : params_) p.zero_grad();
 }
 
+float Optimizer::lr() const { throw std::logic_error("this optimizer has no learning rate"); }
+
+void Optimizer::set_lr(float) { throw std::logic_error("this optimizer has no learning rate"); }
+
+OptimizerState Optimizer::with_lr(const OptimizerState& snapshot, float current_lr) {
+	OptimizerState out = snapshot;
+	bool has = std::any_of(out.begin(), out.end(), [](const auto& e) { return e.first == "lr"; });
+	if (!has) out.emplace_back("lr", Tensor({1}, current_lr));
+	return out;
+}
+
 void Optimizer::load_state(const OptimizerState& state) { check_state(state, {}); }
 
 void Optimizer::check_state(const OptimizerState& got, const OptimizerState& expected) {
@@ -64,7 +75,8 @@ OptimizerState SGD::state() const {
 	return out;
 }
 
-void SGD::load_state(const OptimizerState& state) {
+void SGD::load_state(const OptimizerState& snapshot) {
+	const OptimizerState state = with_lr(snapshot, lr_);
 	check_state(state, this->state());
 	for (const auto& entry : state) {
 		if (entry.first == "lr") lr_ = entry.second.data()[0];
