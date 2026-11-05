@@ -1,0 +1,27 @@
+epoch 0 avg loss 0.3075
+epoch 1 avg loss 0.0776
+epoch 2 avg loss 0.0541
+test accuracy: 98.47% (9847/10000)
+	Command being timed: "build/portable/apps/train_mnist data/mnist"
+	User time (seconds): 107.52
+	System time (seconds): 0.15
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:47.72
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 417060
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 124762
+	Voluntary context switches: 1
+	Involuntary context switches: 3152
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 8
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
