@@ -5,6 +5,7 @@
  */
 
 #include "nn/tensor.hpp"
+#include "nn/kernels/gemm.hpp"
 
 #include <numeric>
 #include <functional>
@@ -379,22 +380,26 @@ Tensor scale(const Tensor& a, float scalar) {
 	return out;
 }
 
-Tensor matmul(const Tensor& a, const Tensor& b) {
+Tensor matmul(const Tensor& a, const Tensor& b) { return matmul(a, b, false, false); }
+
+Tensor matmul(const Tensor& a, const Tensor& b, bool trans_a, bool trans_b) {
 	if (a.ndim() < 2 || b.ndim() < 2) {
 		throw TensorShapeError();
 	}
-	size_t m = a.shape()[a.ndim() - 2];
-	size_t k = a.shape()[a.ndim() - 1];
-	size_t k2 = b.shape()[b.ndim() - 2];
-	size_t n = b.shape()[b.ndim() - 1];
+	size_t a_rows = a.shape()[a.ndim() - 2];
+	size_t a_cols = a.shape()[a.ndim() - 1];
+	size_t b_rows = b.shape()[b.ndim() - 2];
+	size_t b_cols = b.shape()[b.ndim() - 1];
+	size_t m = trans_a ? a_cols : a_rows;
+	size_t k = trans_a ? a_rows : a_cols;
+	size_t k2 = trans_b ? b_cols : b_rows;
+	size_t n = trans_b ? b_rows : b_cols;
 	if (k != k2) {
 		throw TensorShapeError();
 	}
 
 	std::vector<size_t> a_batch(a.shape().begin(), a.shape().end() - 2);
 	std::vector<size_t> b_batch(b.shape().begin(), b.shape().end() - 2);
-	std::vector<size_t> a_batch_strides(a.strides().begin(), a.strides().end() - 2);
-	std::vector<size_t> b_batch_strides(b.strides().begin(), b.strides().end() - 2);
 	std::vector<size_t> batch_shape = broadcast_shape(a_batch, b_batch);
 
 	std::vector<size_t> out_shape = batch_shape;
@@ -405,29 +410,22 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
 	size_t batch_count = 1;
 	for (size_t d : batch_shape) batch_count *= d;
 
-	size_t a_row_stride = a.strides()[a.ndim() - 2];
-	size_t a_col_stride = a.strides()[a.ndim() - 1];
-	size_t b_row_stride = b.strides()[b.ndim() - 2];
-	size_t b_col_stride = b.strides()[b.ndim() - 1];
-	size_t out_row_stride = out.strides()[out.ndim() - 2];
-	size_t out_col_stride = out.strides()[out.ndim() - 1];
+	// Tensors are dense row-major, so a matrix's leading dimension is its stored column count
+	size_t a_mat = a_rows * a_cols;
+	size_t b_mat = b_rows * b_cols;
+	std::vector<size_t> a_batch_strides(a.strides().begin(), a.strides().end() - 2);
+	std::vector<size_t> b_batch_strides(b.strides().begin(), b.strides().end() - 2);
 	std::vector<size_t> batch_strides = compute_strides(batch_shape);
 
 	for (size_t bi = 0; bi < batch_count; bi++) {
-		std::vector<size_t> batch_idx = unravel_index(bi, batch_strides, batch_shape);
-		size_t a_base = broadcast_offset(batch_idx, a_batch, a_batch_strides);
-		size_t b_base = broadcast_offset(batch_idx, b_batch, b_batch_strides);
-		size_t out_base = bi * m * n;
-
-		for (size_t i = 0; i < m; i++) {
-			for (size_t kk = 0; kk < k; kk++) {
-				float a_val = a.data()[a_base + i * a_row_stride + kk * a_col_stride];
-				for (size_t j = 0; j < n; j++) {
-					out.data()[out_base + i * out_row_stride + j * out_col_stride] +=
-						a_val * b.data()[b_base + kk * b_row_stride + j * b_col_stride];
-				}
-			}
+		size_t a_off = 0, b_off = 0;
+		if (batch_count > 1) {
+			std::vector<size_t> batch_idx = unravel_index(bi, batch_strides, batch_shape);
+			a_off = broadcast_offset(batch_idx, a_batch, a_batch_strides);
+			b_off = broadcast_offset(batch_idx, b_batch, b_batch_strides);
 		}
+		kernels::sgemm(trans_a, trans_b, m, n, k, a.data().data() + a_off, a_cols, b.data().data() + b_off, b_cols,
+			out.data().data() + bi * m * n, n, false);
 	}
 	return out;
 }
