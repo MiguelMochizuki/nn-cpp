@@ -7,6 +7,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest/doctest.h"
 #include "nn/tensor.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <cmath>
 
@@ -411,4 +412,28 @@ TEST_CASE("zero_ sets every element to zero in place") {
 	Tensor a({3}, 5.0f);
 	a.zero_();
 	for (float v : a.data()) CHECK(v == 0.0f);
+}
+
+TEST_CASE("in-place add/sub on large tensors is identical for any thread count") {
+	size_t n = 100003;
+	Tensor a({n}), b({n});
+	for (size_t i = 0; i < n; i++) {
+		a.data()[i] = static_cast<float>(i % 13) * 0.37f;
+		b.data()[i] = static_cast<float>(i % 7) * 0.11f;
+	}
+	std::vector<float> expect_add(n), expect_sub(n);
+	for (size_t i = 0; i < n; i++) {
+		expect_add[i] = a.data()[i] + b.data()[i];
+		expect_sub[i] = a.data()[i] - b.data()[i];
+	}
+	size_t saved = nn::kernels::num_threads();
+	for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+		nn::kernels::set_num_threads(threads);
+		Tensor x = a, y = a;
+		x += b;
+		y -= b;
+		CHECK(x.data() == expect_add);
+		CHECK(y.data() == expect_sub);
+	}
+	nn::kernels::set_num_threads(saved);
 }

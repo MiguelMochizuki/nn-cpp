@@ -5,6 +5,7 @@
  */
 
 #include "nn/autograd/ops.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <cmath>
 #include <limits>
@@ -12,6 +13,9 @@
 namespace nn {
 
 namespace {
+
+// Elements per thread below which an elementwise loop stays serial
+constexpr size_t kElementwiseChunk = size_t(1) << 13;
 
 /**
  * Sums a gradient over the axes that broadcasting expanded, so it matches the operand's shape
@@ -277,14 +281,18 @@ Value matmul_bt(const Value& a, const Value& b) {
 
 Value relu(const Value& x) {
 	Tensor result = x.data();
-	for (float& v : result.data()) v = v > 0.0f ? v : 0.0f;
+	float* r = result.data().data();
+	kernels::parallel_range(result.size(), kElementwiseChunk, [r](size_t lo, size_t hi) {
+		for (size_t i = lo; i < hi; i++) r[i] = r[i] > 0.0f ? r[i] : 0.0f;
+	});
 	return Value::node(std::move(result), {x}, [x](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
-		size_t n = grad_out.size();
 		const float* in = x.data().data().data();
 		const float* g = grad_out.data().data();
 		float* dst = x.grad().data().data();
-		for (size_t i = 0; i < n; i++) dst[i] += in[i] > 0.0f ? g[i] : 0.0f;
+		kernels::parallel_range(grad_out.size(), kElementwiseChunk, [=](size_t lo, size_t hi) {
+			for (size_t i = lo; i < hi; i++) dst[i] += in[i] > 0.0f ? g[i] : 0.0f;
+		});
 	});
 }
 

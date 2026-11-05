@@ -6,6 +6,7 @@
 
 #include "nn/tensor.hpp"
 #include "nn/kernels/gemm.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <numeric>
 #include <functional>
@@ -16,6 +17,9 @@
 namespace nn {
 
 namespace {
+
+// Elements per thread below which an elementwise loop stays serial
+constexpr size_t kElementwiseChunk = size_t(1) << 13;
 
 /**
  * Computes row-major strides for a shape
@@ -247,13 +251,21 @@ std::vector<float>& Tensor::data() { return data_; }
 
 Tensor& Tensor::operator+=(const Tensor& other) {
 	if (shape_ != other.shape_) throw TensorShapeError();
-	for (size_t i = 0; i < data_.size(); i++) data_[i] += other.data_[i];
+	float* d = data_.data();
+	const float* o = other.data_.data();
+	kernels::parallel_range(data_.size(), kElementwiseChunk, [=](size_t lo, size_t hi) {
+		for (size_t i = lo; i < hi; i++) d[i] += o[i];
+	});
 	return *this;
 }
 
 Tensor& Tensor::operator-=(const Tensor& other) {
 	if (shape_ != other.shape_) throw TensorShapeError();
-	for (size_t i = 0; i < data_.size(); i++) data_[i] -= other.data_[i];
+	float* d = data_.data();
+	const float* o = other.data_.data();
+	kernels::parallel_range(data_.size(), kElementwiseChunk, [=](size_t lo, size_t hi) {
+		for (size_t i = lo; i < hi; i++) d[i] -= o[i];
+	});
 	return *this;
 }
 

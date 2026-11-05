@@ -8,6 +8,7 @@
 #include "nn/autograd/value.hpp"
 #include "nn/autograd/ops.hpp"
 #include "gradcheck.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <cmath>
 #include <type_traits>
@@ -287,6 +288,22 @@ TEST_CASE("relu backward passes the gradient only where the input is positive an
 			CHECK(x.grad().data()[i] == doctest::Approx(v.data()[i] > 0.0f ? 8.0f : 5.0f));
 		}
 	}
+}
+
+TEST_CASE("relu forward and backward on a large tensor are identical for any thread count") {
+	size_t n = 100003;
+	Tensor v({n});
+	for (size_t i = 0; i < n; i++) v.data()[i] = static_cast<float>(static_cast<int>(i % 11) - 5);
+	size_t saved = nn::kernels::num_threads();
+	for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+		nn::kernels::set_num_threads(threads);
+		Value x = Value::leaf(v, true);
+		sum(relu(x)).backward();
+		for (size_t i = 0; i < n; i++) {
+			CHECK(x.grad().data()[i] == (v.data()[i] > 0.0f ? 1.0f : 0.0f));
+		}
+	}
+	nn::kernels::set_num_threads(saved);
 }
 
 TEST_CASE("sigmoid gradcheck") {
