@@ -15,6 +15,7 @@ option(NN_NATIVE "Compile with -march=native" OFF)
 add_library(nn_core STATIC
 	src/tensor.cpp
 	src/kernels/gemm.cpp
+	src/kernels/parallel.cpp
 	src/autograd/value.cpp
 	src/autograd/ops.cpp
 	src/nn/linear.cpp
@@ -29,6 +30,9 @@ add_library(nn_core STATIC
 )
 
 target_include_directories(nn_core PUBLIC include)
+
+find_package(Threads REQUIRED)
+target_link_libraries(nn_core PUBLIC Threads::Threads)
 
 if(NN_NATIVE)
 	target_compile_options(nn_core PUBLIC -march=native)

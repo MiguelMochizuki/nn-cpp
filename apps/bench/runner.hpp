@@ -107,4 +107,14 @@ Result run_inference(unsigned seed, size_t batch, int warmup, int runs);
  */
 MatmulResult run_matmul(size_t n, unsigned seed, int warmup, int runs);
 
+/**
+ * Sets the library thread count used by every timed workload and matmul
+ *
+ * Parameters:
+ * size_t threads: number of threads (at least 1)
+ *
+ * Returns void
+ */
+void apply_threads(size_t threads);
+
 }  // namespace bench
