@@ -730,3 +730,14 @@ TEST_CASE("relu and maxpool2d backward reject a leaf whose data was reshaped aft
 	p.data() = Tensor({1, 1, 4, 4}, 1.0f);
 	CHECK_THROWS_AS(q.backward(), TensorShapeError);
 }
+
+TEST_CASE("has_grad is false for a non-leaf before backward and true afterwards") {
+	Value x = Value::leaf(Tensor({3}, 2.0f), true);
+	Value h = relu(x);
+	Value y = sum(h);
+	CHECK(x.has_grad());
+	CHECK_FALSE(h.has_grad());
+	y.backward();
+	CHECK(h.has_grad());
+	CHECK(x.has_grad());
+}

@@ -49,6 +49,7 @@ Tensor Value::data() && { return impl_->data; }
 Tensor& Value::grad() const& { return impl_->grad; }
 Tensor Value::grad() && { return impl_->grad; }
 bool Value::requires_grad() const { return impl_->requires_grad; }
+bool Value::has_grad() const { return impl_->grad.shape() == impl_->data.shape(); }
 NodeImpl* Value::impl() const { return impl_.get(); }
 
 void Value::zero_grad() const {

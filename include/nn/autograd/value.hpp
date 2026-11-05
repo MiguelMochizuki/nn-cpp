@@ -156,6 +156,15 @@ public:
 	 */
 	bool requires_grad() const;
 
+	/* Whether grad() holds a gradient shaped like data(). False for a non-leaf
+	 * node that backward() has not reached yet (its grad() is an empty placeholder)
+	 *
+	 * Parameters: none
+	 *
+	 * Returns bool: true if grad() has the same shape as data()
+	 */
+	bool has_grad() const;
+
 	/* Public, identity of the underlying graph node, for use as a visited-set key
 	 *
 	 * Parameters: none
