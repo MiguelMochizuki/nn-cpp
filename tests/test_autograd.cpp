@@ -741,3 +741,48 @@ TEST_CASE("has_grad is false for a non-leaf before backward and true afterwards"
 	CHECK(h.has_grad());
 	CHECK(x.has_grad());
 }
+
+TEST_CASE("backward orders a node after all its consumers when paths have different depths") {
+	// c feeds both mul(c, c) (a deeper path) and the final mul directly
+	auto shared = [](Value x) {
+		Value c = mul(x, x);
+		return sum(mul(c, mul(c, c)));
+	};
+	// residual style: h feeds tanh(mul(h, h)) and the final add directly
+	auto residual = [](Value x) {
+		Value w = Value::leaf(Tensor(x.data().shape(), 0.7f), false);
+		Value h = mul(x, w);
+		return sum(add(h, tanh(mul(h, h))));
+	};
+	for (const std::vector<size_t>& shape : {std::vector<size_t>{1}, std::vector<size_t>{7, 3}, std::vector<size_t>{33}}) {
+		Tensor t(shape, 0.0f);
+		for (size_t i = 0; i < t.size(); i++) t.data()[i] = 0.9f - 0.05f * static_cast<float>(i % 31) * (i % 2 ? 1.0f : -1.0f);
+		Value x = Value::leaf(t, true);
+		CHECK(gradcheck(shared, x, 1e-3f, 5e-2f));
+		CHECK(gradcheck(residual, x, 1e-3f, 5e-2f));
+	}
+}
+
+TEST_CASE("backward gives the exact gradient for a node consumed at different depths") {
+	// f(x) = (x^2)^3 = x^6, df/dx = 6 x^5 = 192 at x = 2
+	Value x = Value::leaf(Tensor({1}, 2.0f), true);
+	Value c = mul(x, x);
+	sum(mul(c, mul(c, c))).backward();
+	CHECK(x.grad().data()[0] == doctest::Approx(192.0f));
+}
+
+TEST_CASE("backward of mul(x, x) is 2x") {
+	Value x = Value::leaf(Tensor({1}, 3.0f), true);
+	sum(mul(x, x)).backward();
+	CHECK(x.grad().data()[0] == doctest::Approx(6.0f));
+}
+
+TEST_CASE("backward on a 100000 node chain does not overflow the stack") {
+	Value x = Value::leaf(Tensor({1}, 1.0f), true);
+	{
+		Value y = x;
+		for (int i = 0; i < 100000; i++) y = scale(y, 1.0f);
+		y.backward();
+	}
+	CHECK(x.grad().data()[0] == doctest::Approx(1.0f));
+}

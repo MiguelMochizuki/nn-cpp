@@ -3,6 +3,12 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-11-05
+
+### Fixed
+
+- `Value::backward()` computed wrong gradients when a node was consumed along paths of different depth (for example `c` feeding both `mul(c, mul(c, c))` and the final op directly). The traversal ordered such a node before some of its consumers, so it passed its gradient on before all of it had arrived. This affects any model with shared subgraphs, such as residual connections. Gradients of models without such sharing, including the bundled MLP and CNN examples, were correct. Upgrading is recommended for anyone training models with shared subgraphs.
+
 ## [1.0.0] - 2026-11-05
 
 First release.

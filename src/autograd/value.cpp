@@ -68,25 +68,28 @@ void Value::backward() const {
 	}
 
 	std::vector<Value> topo_order;
-	std::unordered_set<NodeImpl*> visited;
+	// Iterative post-order DFS. A node is expanded once and appended once every parent has been
+	// appended, so it always lands after all of its parents, however its consumers are nested.
+	std::unordered_set<NodeImpl*> expanded;
+	std::unordered_set<NodeImpl*> done;
 	std::vector<Value> stack;
-	std::unordered_set<NodeImpl*> pushed;
 
 	stack.push_back(*this);
-	pushed.insert(impl());
 	while (!stack.empty()) {
 		Value v = stack.back();
-		if (visited.count(v.impl())) {
+		if (done.count(v.impl())) {
 			stack.pop_back();
+			continue;
+		}
+		if (expanded.count(v.impl())) {
+			stack.pop_back();
+			done.insert(v.impl());
 			topo_order.push_back(v);
 			continue;
 		}
-		visited.insert(v.impl());
+		expanded.insert(v.impl());
 		for (const Value& p : v.impl()->parents) {
-			if (!pushed.count(p.impl())) {
-				pushed.insert(p.impl());
-				stack.push_back(p);
-			}
+			if (!expanded.count(p.impl())) stack.push_back(p);
 		}
 	}
 
