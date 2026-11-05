@@ -9,6 +9,7 @@
 #include "reference_gemm.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <random>
 #include <vector>
@@ -18,6 +19,22 @@ using namespace nn::kernels;
 namespace {
 
 constexpr float kSentinel = 1e30f;
+
+/**
+ * Which microkernel this build should pick for sgemm: AVX2/FMA when the
+ * compiler targets both, otherwise the portable one
+ */
+#if defined(__AVX2__) && defined(__FMA__)
+constexpr bool kExpectAvx2 = true;
+#else
+constexpr bool kExpectAvx2 = false;
+#endif
+
+/**
+ * Signature shared by sgemm, sgemm_portable and reference_sgemm
+ */
+using Gemm = void (*)(bool, bool, size_t, size_t, size_t, const float*, size_t,
+	const float*, size_t, float*, size_t, bool);
 
 /**
  * Holds one GEMM problem: operand storage laid out per the transpose flags
@@ -90,7 +107,7 @@ float magnitude(const Problem& p, bool accumulate, size_t i, size_t j) {
 }
 
 /**
- * Runs sgemm_portable and the reference on copies of C and checks they agree
+ * Runs got_fn and want_fn on copies of C and checks they agree
  * elementwise (1e-5 relative to magnitude(), 1e-6 absolute floor, NaN/Inf
  * positions equal),
  * that C padding is untouched and that no sentinel leaked into the result
@@ -98,14 +115,17 @@ float magnitude(const Problem& p, bool accumulate, size_t i, size_t j) {
  * Parameters:
  * const Problem& p: The problem
  * bool accumulate: Accumulate flag passed to both
+ * Gemm got_fn: Kernel under test
+ * Gemm want_fn: Kernel taken as ground truth
  *
  * Returns void
  */
-void check(const Problem& p, bool accumulate) {
+void check(const Problem& p, bool accumulate, Gemm got_fn = sgemm_portable,
+		Gemm want_fn = reference_sgemm) {
 	std::vector<float> got = p.c, want = p.c;
-	sgemm_portable(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb,
+	got_fn(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb,
 		got.data(), p.ldc, accumulate);
-	reference_sgemm(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb,
+	want_fn(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb,
 		want.data(), p.ldc, accumulate);
 	size_t bad = 0;
 	for (size_t i = 0; i < p.m; ++i) {
@@ -194,12 +214,51 @@ TEST_CASE("sgemm_portable propagates Inf and NaN like the reference") {
 		for (int tb = 0; tb < 2; ++tb) {
 			for (int acc = 0; acc < 2; ++acc) {
 				Problem p = make_problem(ta, tb, 7, 33, 17, 0, seed++);
-				// Row 2 of op(A) is +Inf; element (5, 3) of op(B) is NaN.
-				for (size_t q = 0; q < p.k; ++q)
-					p.a[ta ? q * p.lda + 2 : 2 * p.lda + q] = inf;
+				// op(A)(2, 0) is +Inf and row 0 of op(B) cycles +1, -1, 0, so row 2
+				// of C holds +Inf, -Inf and NaN (Inf * 0); op(B)(5, 3) is NaN, so
+				// column 3 of C is NaN.
+				p.a[ta ? 2 : 2 * p.lda] = inf;
+				for (size_t j = 0; j < p.n; ++j)
+					p.b[tb ? j * p.ldb : j] = j % 3 == 0 ? 1.0f : j % 3 == 1 ? -1.0f : 0.0f;
 				p.b[tb ? 3 * p.ldb + 5 : 5 * p.ldb + 3] = nan;
 				check(p, acc);
+				check(p, acc, sgemm);
 			}
 		}
+	}
+}
+
+TEST_CASE("sgemm matches reference and portable path") {
+	CHECK(sgemm_uses_avx2() == kExpectAvx2);
+	const size_t sizes[] = {1, 7, 33, 257};
+	unsigned seed = 4000;
+	for (int ta = 0; ta < 2; ++ta)
+		for (int tb = 0; tb < 2; ++tb)
+			for (int acc = 0; acc < 2; ++acc)
+				for (size_t m : sizes)
+					for (size_t n : sizes)
+						for (size_t k : sizes) {
+							Problem p = make_problem(ta, tb, m, n, k, 0, seed++);
+							check(p, acc, sgemm);
+							check(p, acc, sgemm, sgemm_portable);
+						}
+	struct Dims { size_t m, n, k; };
+	const Dims cases[] = {{kMC + 5, 7, 33}, {7, 33, kKC + 5}, {7, kNC + 5, 33}};
+	for (int ta = 0; ta < 2; ++ta)
+		for (int tb = 0; tb < 2; ++tb)
+			for (int acc = 0; acc < 2; ++acc) {
+				for (const Dims& d : cases)
+					check(make_problem(ta, tb, d.m, d.n, d.k, 0, seed++), acc, sgemm);
+				check(make_problem(ta, tb, 7, 33, 33, 3, seed++), acc, sgemm);
+			}
+}
+
+TEST_CASE("sgemm is deterministic") {
+	for (int acc = 0; acc < 2; ++acc) {
+		Problem p = make_problem(false, true, 101, 75, 300, 2, 5000);
+		std::vector<float> c1 = p.c, c2 = p.c;
+		sgemm(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb, c1.data(), p.ldc, acc);
+		sgemm(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb, c2.data(), p.ldc, acc);
+		CHECK(std::memcmp(c1.data(), c2.data(), c1.size() * sizeof(float)) == 0);
 	}
 }

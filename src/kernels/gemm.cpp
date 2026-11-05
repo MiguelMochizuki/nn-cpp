@@ -10,6 +10,11 @@
 #include <cstdlib>
 #include <new>
 
+#if defined(__AVX2__) && defined(__FMA__)
+#define NN_GEMM_AVX2 1
+#include <immintrin.h>
+#endif
+
 namespace nn {
 namespace kernels {
 
@@ -26,7 +31,21 @@ static_assert(kNC % kNR == 0, "kNC must be a multiple of kNR");
  */
 struct AlignedBuffer {
 	float* p = nullptr;
+
+	/**
+	 * Frees the buffer
+	 */
 	~AlignedBuffer() { std::free(p); }
+
+	/**
+	 * Returns the buffer, allocating it on the first call. Later calls ignore
+	 * floats, so each buffer must always be asked for the same size.
+	 *
+	 * Parameters:
+	 * size_t floats: Buffer size in floats
+	 *
+	 * Returns float*: The 64-byte aligned buffer
+	 */
 	float* get(size_t floats) {
 		if (!p) {
 			p = static_cast<float*>(std::aligned_alloc(64, floats * sizeof(float)));
@@ -123,9 +142,77 @@ void micro_portable(size_t kc, const float* ap, const float* bp, float* c, size_
 			c[i * ldc + j] = mode == Store::kAdd ? c[i * ldc + j] + acc[i][j] : acc[i][j];
 }
 
-}  // namespace
+#ifdef NN_GEMM_AVX2
+/**
+ * AVX2/FMA microkernel, same contract as micro_portable: 12 ymm accumulators
+ * hold the kMR x kNR tile. Edge tiles run on a stack copy so nothing outside
+ * C's mr x nr corner is read or written.
+ *
+ * Parameters: as micro_portable
+ *
+ * Returns void
+ */
+void micro_avx2(size_t kc, const float* ap, const float* bp, float* c, size_t ldc,
+		size_t mr, size_t nr, Store mode) {
+	static_assert(kMR == 6 && kNR == 16, "micro_avx2 is written for a 6 x 16 tile");
+	alignas(32) float buf[kMR * kNR];
+	bool edge = mr < kMR || nr < kNR;
+	float* t = c;
+	size_t ldt = ldc;
+	if (edge) {
+		t = buf;
+		ldt = kNR;
+		if (mode != Store::kOverwrite)
+			for (size_t i = 0; i < mr; ++i)
+				for (size_t j = 0; j < nr; ++j) buf[i * kNR + j] = c[i * ldc + j];
+	}
+	__m256 acc[kMR][2];
+	for (size_t i = 0; i < kMR; ++i) {
+		if (mode == Store::kContinue) {
+			acc[i][0] = _mm256_loadu_ps(t + i * ldt);
+			acc[i][1] = _mm256_loadu_ps(t + i * ldt + 8);
+		} else {
+			acc[i][0] = acc[i][1] = _mm256_setzero_ps();
+		}
+	}
+	for (size_t p = 0; p < kc; ++p, ap += kMR, bp += kNR) {
+		__m256 b0 = _mm256_load_ps(bp), b1 = _mm256_load_ps(bp + 8);
+		for (size_t i = 0; i < kMR; ++i) {
+			__m256 av = _mm256_broadcast_ss(ap + i);
+			acc[i][0] = _mm256_fmadd_ps(av, b0, acc[i][0]);
+			acc[i][1] = _mm256_fmadd_ps(av, b1, acc[i][1]);
+		}
+	}
+	for (size_t i = 0; i < kMR; ++i) {
+		if (mode == Store::kAdd) {
+			acc[i][0] = _mm256_add_ps(_mm256_loadu_ps(t + i * ldt), acc[i][0]);
+			acc[i][1] = _mm256_add_ps(_mm256_loadu_ps(t + i * ldt + 8), acc[i][1]);
+		}
+		_mm256_storeu_ps(t + i * ldt, acc[i][0]);
+		_mm256_storeu_ps(t + i * ldt + 8, acc[i][1]);
+	}
+	if (edge)
+		for (size_t i = 0; i < mr; ++i)
+			for (size_t j = 0; j < nr; ++j) c[i * ldc + j] = buf[i * kNR + j];
+}
+#endif
 
-void sgemm_portable(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
+/**
+ * Microkernel signature shared by micro_portable and micro_avx2
+ */
+using Micro = void (*)(size_t, const float*, const float*, float*, size_t, size_t, size_t, Store);
+
+/**
+ * Blocked GEMM driver: packs op(A) and op(B) block by block and runs micro
+ * on every tile. Same contract as sgemm.
+ *
+ * Parameters:
+ * Micro micro: Microkernel to run on each tile
+ * Others: as sgemm
+ *
+ * Returns void
+ */
+void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 		const float* a, size_t lda, const float* b, size_t ldb,
 		float* c, size_t ldc, bool accumulate) {
 	if (m == 0 || n == 0) return;
@@ -151,7 +238,7 @@ void sgemm_portable(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 					size_t nr = std::min(kNR, nc - jr);
 					for (size_t ir = 0; ir < mc; ir += kMR) {
 						size_t mr = std::min(kMR, mc - ir);
-						micro_portable(kc, a_pack + ir * kc, b_pack + jr * kc,
+						micro(kc, a_pack + ir * kc, b_pack + jr * kc,
 							c + (ic + ir) * ldc + jc + jr, ldc, mr, nr, mode);
 					}
 				}
@@ -160,10 +247,30 @@ void sgemm_portable(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 	}
 }
 
+}  // namespace
+
+void sgemm_portable(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
+		const float* a, size_t lda, const float* b, size_t ldb,
+		float* c, size_t ldc, bool accumulate) {
+	blocked(micro_portable, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
+}
+
 void sgemm(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 		const float* a, size_t lda, const float* b, size_t ldb,
 		float* c, size_t ldc, bool accumulate) {
-	sgemm_portable(trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
+#ifdef NN_GEMM_AVX2
+	blocked(micro_avx2, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
+#else
+	blocked(micro_portable, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
+#endif
+}
+
+bool sgemm_uses_avx2() {
+#ifdef NN_GEMM_AVX2
+	return true;
+#else
+	return false;
+#endif
 }
 
 }  // namespace kernels
