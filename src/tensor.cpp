@@ -119,6 +119,52 @@ size_t broadcast_offset(const std::vector<size_t>& out_idx, const std::vector<si
 }
 
 /**
+ * Applies a binary operation when the smaller operand repeats over the larger one in a simple
+ * pattern: a scalar, a trailing block (row broadcast) or one value per last-axis row (column
+ * broadcast). Skips the general per-element index arithmetic.
+ *
+ * Parameters:
+ * const Tensor& big: Operand whose shape is the result shape
+ * const Tensor& small: Operand that is broadcast over big
+ * Op op: Callable taking (big element, small element) and returning a float
+ * Tensor& out: Receives the result when the pattern applies
+ *
+ * Returns bool: true if the pattern applied and out was filled, false to use the general path
+ */
+template <typename Op>
+bool broadcast_small(const Tensor& big, const Tensor& small, Op op, Tensor& out) {
+	size_t n = big.size(), ns = small.size();
+	if (n == 0 || ns == 0 || small.ndim() > big.ndim()) return false;
+	const std::vector<size_t>& bs = big.shape();
+	const std::vector<size_t>& ss = small.shape();
+	size_t lead = 0;
+	while (lead < ss.size() && ss[lead] == 1) lead++;
+	size_t eff = ss.size() - lead;
+	const float* b_data = big.data().data();
+	const float* s_data = small.data().data();
+
+	if (std::equal(ss.begin() + lead, ss.end(), bs.end() - eff)) {
+		out = Tensor(bs);
+		float* o = out.data().data();
+		for (size_t base = 0; base < n; base += ns) {
+			for (size_t j = 0; j < ns; j++) o[base + j] = op(b_data[base + j], s_data[j]);
+		}
+		return true;
+	}
+	if (ss.size() == bs.size() && ss.back() == 1 && std::equal(ss.begin(), ss.end() - 1, bs.begin())) {
+		out = Tensor(bs);
+		float* o = out.data().data();
+		size_t cols = bs.back();
+		for (size_t r = 0; r < ns; r++) {
+			float v = s_data[r];
+			for (size_t j = 0; j < cols; j++) o[r * cols + j] = op(b_data[r * cols + j], v);
+		}
+		return true;
+	}
+	return false;
+}
+
+/**
  * Applies a binary operation elementwise, broadcasting when the shapes differ
  *
  * Parameters:
@@ -143,6 +189,12 @@ Tensor elementwise(const Tensor& a, const Tensor& b, Op op) {
 	}
 
 	std::vector<size_t> out_shape = broadcast_shape(a.shape(), b.shape());
+	{
+		Tensor fast({0});
+		if (a.ndim() >= b.ndim() && a.shape() == out_shape && broadcast_small(a, b, op, fast)) return fast;
+		auto swapped = [&op](float x, float y) { return op(y, x); };
+		if (b.ndim() >= a.ndim() && b.shape() == out_shape && broadcast_small(b, a, swapped, fast)) return fast;
+	}
 	Tensor out(out_shape);
 	std::vector<size_t> out_strides = compute_strides(out_shape);
 

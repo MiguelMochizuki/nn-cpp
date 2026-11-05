@@ -182,6 +182,60 @@ TEST_CASE("add broadcasts a smaller trailing dimension") {
 	CHECK(c.get({1, 2}) == 36.0f);
 }
 
+namespace {
+// Reference broadcast: walks every output index and reads each operand through its own dimensions
+Tensor reference_broadcast(const Tensor& a, const Tensor& b, float (*op)(float, float), const std::vector<size_t>& out_shape) {
+	Tensor out(out_shape);
+	size_t rank = out_shape.size();
+	for (size_t flat = 0; flat < out.size(); flat++) {
+		std::vector<size_t> idx(rank);
+		size_t rem = flat;
+		for (size_t d = rank; d-- > 0;) {
+			idx[d] = rem % out_shape[d];
+			rem /= out_shape[d];
+		}
+		auto pick = [&](const Tensor& t) {
+			std::vector<size_t> ti(t.ndim());
+			for (size_t d = 0; d < t.ndim(); d++) ti[d] = t.shape()[d] == 1 ? 0 : idx[d + rank - t.ndim()];
+			return t.get(ti);
+		};
+		out.data()[flat] = op(pick(a), pick(b));
+	}
+	return out;
+}
+}  // namespace
+
+TEST_CASE("elementwise broadcast fast paths match the index-by-index reference") {
+	auto fill = [](Tensor& t, float seed) {
+		for (size_t i = 0; i < t.size(); i++) t.data()[i] = seed + static_cast<float>((i * 7) % 11);
+	};
+	for (size_t n : {size_t{1}, size_t{7}, size_t{33}, size_t{257}}) {
+		using Shapes = std::pair<std::vector<size_t>, std::vector<size_t>>;
+		std::vector<Shapes> cases = {
+			{{3, n}, {n}},          // row
+			{{3, n}, {1, n}},       // row with leading 1
+			{{3, n}, {1}},          // scalar
+			{{3, n}, {}},           // rank-0 scalar
+			{{3, n}, {3, 1}},       // column
+			{{2, 3, n}, {3, n}},    // batch broadcast
+			{{2, 3, n}, {2, 3, 1}}, // column on 3D
+			{{2, 3, n}, {1, 1}},    // all-ones lower rank
+			{{3, 1}, {1, n}},       // both expand (general path)
+			{{n}, {n}},             // same shape
+		};
+		for (const auto& c : cases) {
+			Tensor a(c.first), b(c.second);
+			fill(a, 1.0f);
+			fill(b, 0.25f);
+			std::vector<size_t> out_shape = (a.ndim() >= b.ndim() ? a : b).shape();
+			if (c.first == std::vector<size_t>{3, 1}) out_shape = {3, n};
+			CHECK(sub(a, b).shape() == out_shape);
+			CHECK(sub(a, b).data() == reference_broadcast(a, b, +[](float x, float y) { return x - y; }, out_shape).data());
+			CHECK(sub(b, a).data() == reference_broadcast(b, a, +[](float x, float y) { return x - y; }, out_shape).data());
+		}
+	}
+}
+
 TEST_CASE("add with incompatible shapes throws") {
 	Tensor a({3});
 	Tensor b({4});
