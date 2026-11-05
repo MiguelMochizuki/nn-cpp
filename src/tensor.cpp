@@ -411,8 +411,6 @@ Tensor matmul(const Tensor& a, const Tensor& b, bool trans_a, bool trans_b) {
 	for (size_t d : batch_shape) batch_count *= d;
 
 	// Tensors are dense row-major, so a matrix's leading dimension is its stored column count
-	size_t a_mat = a_rows * a_cols;
-	size_t b_mat = b_rows * b_cols;
 	std::vector<size_t> a_batch_strides(a.strides().begin(), a.strides().end() - 2);
 	std::vector<size_t> b_batch_strides(b.strides().begin(), b.strides().end() - 2);
 	std::vector<size_t> batch_strides = compute_strides(batch_shape);
