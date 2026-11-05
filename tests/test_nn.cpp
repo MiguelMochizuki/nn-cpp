@@ -42,6 +42,30 @@ TEST_CASE("Linear forward matches a hand-set weight and bias") {
 	CHECK(output.data().get({0, 0}) == doctest::Approx(1.0f * 3.0f + 2.0f * 4.0f + 0.5f));
 }
 
+TEST_CASE("Linear forward matches x * W^T + b") {
+	Linear layer(3, 2);
+	std::vector<Value> params = layer.parameters();
+	params[0].data() = Tensor({2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6});
+	params[1].data() = Tensor({2}, std::vector<float>{0.5f, -1.0f});
+	Value input = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 0, 1, 0, 1, 2}), false);
+	Tensor out = layer.forward(input).data();
+	CHECK(out.shape() == std::vector<size_t>{2, 2});
+	CHECK(out.get({0, 0}) == doctest::Approx(4.5f));
+	CHECK(out.get({0, 1}) == doctest::Approx(9.0f));
+	CHECK(out.get({1, 0}) == doctest::Approx(8.5f));
+	CHECK(out.get({1, 1}) == doctest::Approx(16.0f));
+}
+
+TEST_CASE("Linear named_parameters keeps weight {out,in} and bias {out}") {
+	Linear layer(3, 2);
+	auto named = layer.named_parameters();
+	REQUIRE(named.size() == 2);
+	CHECK(named[0].first == "weight");
+	CHECK(named[0].second.data().shape() == std::vector<size_t>{2, 3});
+	CHECK(named[1].first == "bias");
+	CHECK(named[1].second.data().shape() == std::vector<size_t>{2});
+}
+
 TEST_CASE("Linear parameters gradcheck through the layer") {
 	Linear layer(2, 2);
 	Value input = Value::leaf(Tensor({3, 2}, std::vector<float>{1, 2, 3, 4, 5, 6}), false);

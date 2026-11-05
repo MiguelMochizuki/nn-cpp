@@ -215,6 +215,16 @@ TEST_CASE("matmul batched with matching batch dim") {
 	CHECK(c.get({1, 0, 0}) == doctest::Approx(2.0f));
 }
 
+TEST_CASE("matmul with empty matrices") {
+	Tensor a = matmul(Tensor({0, 3}), Tensor({3, 2}));
+	CHECK(a.shape() == std::vector<size_t>{0, 2});
+	Tensor b = matmul(Tensor({2, 0}), Tensor({0, 3}));
+	CHECK(b.shape() == std::vector<size_t>{2, 3});
+	for (float v : b.data()) CHECK(v == 0.0f);
+	Tensor c = matmul(Tensor({2, 3}), Tensor({3, 0}));
+	CHECK(c.shape() == std::vector<size_t>{2, 0});
+}
+
 TEST_CASE("matmul inner dimension mismatch throws") {
 	Tensor a({2, 3});
 	Tensor b({4, 2});

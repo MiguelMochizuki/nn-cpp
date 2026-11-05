@@ -176,6 +176,24 @@ TEST_CASE("matmul gradcheck") {
 	CHECK(gradcheck(f, a));
 }
 
+TEST_CASE("matmul_bt gradcheck") {
+	Value b = Value::leaf(Tensor({4, 3}, std::vector<float>{1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 0, -1}), true);
+	Value a = Value::leaf(Tensor({2, 3}, std::vector<float>{0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f}), true);
+	auto fa = [b](Value x) mutable { return sum(matmul_bt(x, b)); };
+	CHECK(gradcheck(fa, a));
+	auto fb = [a](Value x) mutable { return sum(matmul_bt(a, x)); };
+	CHECK(gradcheck(fb, b));
+}
+
+TEST_CASE("matmul_bt forward equals matmul with explicit transpose") {
+	Value a = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6}), false);
+	Value b = Value::leaf(Tensor({4, 3}, std::vector<float>{1, 0, 2, 3, 1, 0, -1, 2, 2, 0.5f, 0.5f, 0.5f}), false);
+	Tensor got = matmul_bt(a, b).data();
+	Tensor want = matmul(a.data(), b.data().transpose({1, 0}));
+	CHECK(got.shape() == want.shape());
+	for (size_t i = 0; i < want.size(); i++) CHECK(got.data()[i] == doctest::Approx(want.data()[i]).epsilon(1e-4));
+}
+
 TEST_CASE("matmul forward matches Tensor matmul") {
 	Value a = Value::leaf(Tensor({2, 2}, std::vector<float>{1, 2, 3, 4}), false);
 	Value b = Value::leaf(Tensor({2, 2}, std::vector<float>{5, 6, 7, 8}), false);

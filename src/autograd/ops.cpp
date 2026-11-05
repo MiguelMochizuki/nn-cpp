@@ -144,21 +144,6 @@ Tensor col2im(const Tensor& col_grad, const std::vector<size_t>& x_shape, size_t
 }
 
 /**
- * Swaps the last two axes of a tensor
- *
- * Parameters:
- * const Tensor& t: Tensor with at least two dimensions
- *
- * Returns Tensor: Transposed copy
- */
-Tensor transpose_last_two(const Tensor& t) {
-	std::vector<size_t> perm(t.ndim());
-	for (size_t i = 0; i < t.ndim(); i++) perm[i] = i;
-	std::swap(perm[t.ndim() - 2], perm[t.ndim() - 1]);
-	return t.transpose(perm);
-}
-
-/**
  * Inserts a size-1 axis, used to re-broadcast a reduced gradient
  *
  * Parameters:
@@ -245,11 +230,25 @@ Value matmul(const Value& a, const Value& b) {
 	Tensor result = matmul(a.data(), b.data());
 	return Value::node(result, {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) {
-			Tensor grad_a = matmul(grad_out, transpose_last_two(b.data()));
+			Tensor grad_a = matmul(grad_out, b.data(), false, true);
 			a.grad() += sum_to_shape(grad_a, a.data().shape());
 		}
 		if (b.requires_grad()) {
-			Tensor grad_b = matmul(transpose_last_two(a.data()), grad_out);
+			Tensor grad_b = matmul(a.data(), grad_out, true, false);
+			b.grad() += sum_to_shape(grad_b, b.data().shape());
+		}
+	});
+}
+
+Value matmul_bt(const Value& a, const Value& b) {
+	Tensor result = matmul(a.data(), b.data(), false, true);
+	return Value::node(result, {a, b}, [a, b](const Tensor& grad_out) {
+		if (a.requires_grad()) {
+			Tensor grad_a = matmul(grad_out, b.data());
+			a.grad() += sum_to_shape(grad_a, a.data().shape());
+		}
+		if (b.requires_grad()) {
+			Tensor grad_b = matmul(grad_out, a.data(), true, false);
 			b.grad() += sum_to_shape(grad_b, b.data().shape());
 		}
 	});
@@ -369,13 +368,13 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
 				bias.grad() += grad_bias;
 			}
 			if (weight.requires_grad()) {
-				Tensor grad_weight_batched = matmul(grad_out_mat, transpose_last_two(col));
+				Tensor grad_weight_batched = matmul(grad_out_mat, col, false, true);
 				Tensor grad_weight = grad_weight_batched.sum(0).reshape({Cout, Cin, kh, kw});
 				weight.grad() += grad_weight;
 			}
 			if (x.requires_grad()) {
-				Tensor weight_mat_t = transpose_last_two(weight.data().reshape({Cout, Cin * kh * kw}));
-				Tensor grad_col = matmul(weight_mat_t, grad_out_mat);
+				Tensor weight_mat = weight.data().reshape({Cout, Cin * kh * kw});
+				Tensor grad_col = matmul(weight_mat, grad_out_mat, true, false);
 				Tensor grad_x =
 					col2im(grad_col, x_shape, kh, kw, static_cast<size_t>(stride), static_cast<size_t>(padding));
 				x.grad() += grad_x;
