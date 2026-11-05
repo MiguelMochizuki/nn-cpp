@@ -7,10 +7,13 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest/doctest.h"
 #include "csv.hpp"
+#include "runner.hpp"
 #include "stats.hpp"
 #include "workloads.hpp"
 #include "nn/autograd/ops.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -107,4 +110,30 @@ TEST_CASE("workloads are learnable") {
 	Workload wide = make_workload("mlp_wide", 1);
 	auto wl = train_losses(wide, 15);
 	CHECK(wl.second < wl.first);
+}
+
+TEST_CASE("time_train_step returns finite positive times") {
+	Workload w = make_workload("xor", 1);
+	StepTimes t = time_train_step(w);
+	CHECK(t.forward_ms > 0);
+	CHECK(t.backward_ms > 0);
+	CHECK(t.optim_ms > 0);
+	CHECK(std::isfinite(t.loss));
+}
+
+TEST_CASE("run_workload aggregates medians") {
+	Result r = run_workload("xor", 1, 1, 3);
+	CHECK(r.runs == 3);
+	CHECK(r.total_ms > 0);
+	CHECK(r.total_ms >= std::max({r.forward_ms, r.backward_ms, r.optim_ms}));
+	Result one = run_workload("xor", 1, 0, 1);
+	CHECK(one.spread == 0.0);
+}
+
+TEST_CASE("run_inference and run_matmul") {
+	CHECK(run_inference(1, 1, 1, 2).name == "infer_nograd_b1");
+	CHECK(run_inference(1, 256, 0, 1).name == "infer_nograd_b256");
+	MatmulResult m = run_matmul(8, 1, 1, 3);
+	CHECK(m.gflops > 0);
+	CHECK(m.n == 8);
 }

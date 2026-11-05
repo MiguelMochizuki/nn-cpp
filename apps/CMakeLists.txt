@@ -19,7 +19,7 @@ if(NN_BUILD_TESTS)
 	target_include_directories(mnist_tests PRIVATE mnist)
 	doctest_discover_tests(mnist_tests)
 
-	add_executable(bench_tests bench/test_bench.cpp bench/workloads.cpp)
+	add_executable(bench_tests bench/test_bench.cpp bench/workloads.cpp bench/runner.cpp)
 	target_link_libraries(bench_tests PRIVATE nn_core doctest::doctest)
 	target_include_directories(bench_tests PRIVATE bench)
 	doctest_discover_tests(bench_tests)
