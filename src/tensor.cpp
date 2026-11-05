@@ -103,10 +103,13 @@ std::vector<size_t> broadcast_shape(const std::vector<size_t>& a, const std::vec
 	for (size_t i = 0; i < rank; i++) {
 		size_t a_dim = (i < rank - a.size()) ? 1 : a[i - (rank - a.size())];
 		size_t b_dim = (i < rank - b.size()) ? 1 : b[i - (rank - b.size())];
-		if (a_dim != b_dim && a_dim != 1 && b_dim != 1) {
+		if (a_dim == b_dim || b_dim == 1) {
+			out[i] = a_dim;
+		} else if (a_dim == 1) {
+			out[i] = b_dim;
+		} else {
 			throw TensorShapeError();
 		}
-		out[i] = std::max(a_dim, b_dim);
 	}
 	return out;
 }

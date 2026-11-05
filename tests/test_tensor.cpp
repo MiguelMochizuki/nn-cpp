@@ -183,6 +183,14 @@ TEST_CASE("add broadcasts a smaller trailing dimension") {
 	CHECK(c.get({1, 2}) == 36.0f);
 }
 
+TEST_CASE("broadcasting keeps zero-size dimensions") {
+	CHECK(add(Tensor({0, 3}, 1.0f), Tensor({1, 3}, 2.0f)).shape() == std::vector<size_t>{0, 3});
+	CHECK(add(Tensor({1, 3}, 2.0f), Tensor({0, 3}, 1.0f)).shape() == std::vector<size_t>{0, 3});
+	CHECK(add(Tensor({0}, 1.0f), Tensor({1}, 2.0f)).shape() == std::vector<size_t>{0});
+	CHECK(mul(Tensor({2, 0}, 1.0f), Tensor({2, 1}, 2.0f)).shape() == std::vector<size_t>{2, 0});
+	CHECK_THROWS_AS(add(Tensor({0, 3}, 1.0f), Tensor({2, 3}, 2.0f)), TensorShapeError);
+}
+
 namespace {
 // Reference broadcast: walks every output index and reads each operand through its own dimensions
 Tensor reference_broadcast(const Tensor& a, const Tensor& b, float (*op)(float, float), const std::vector<size_t>& out_shape) {
