@@ -30,5 +30,6 @@ One row per header under `include/nn/`. Every function and class is documented i
 | `nn/data/subset.hpp` | `Subset(dataset, indices)`, `random_split(dataset, fractions, seed)` |
 | `nn/data/transform.hpp` | `Transform`, `Compose`, `Normalize(mean, std)`, `RandomHorizontalFlip(p)`, `RandomShift(max_shift)`, `TransformedDataset(dataset, transform)`, `compute_mean_std(dataset)` |
 | `nn/data/fer2013.hpp` | `Fer2013Dataset(csv_path, usage=, image_size=48)` — FER-2013 CSV loader (the data is not included) |
+| `nn/metrics.hpp` | scikit-learn-style classification metrics: `confusion_matrix`, `accuracy_score`, `precision_recall_f1` (per class), `precision_score` / `recall_score` / `f1_score` (`Average::Micro`, `Macro`, `Weighted`; `zero_division`), `classification_report`, plus `argmax_rows` and `to_labels` to get labels from logits and from the `DataLoader`'s float ids |
 | `nn/kernels/parallel.hpp` | `num_threads()`, `set_num_threads(n)`, `parallel_for(n_chunks, fn)`, `parallel_range(n, min_per_chunk, fn)` — fork/join thread pool used by `sgemm` (x86-64), the elementwise ops, ReLU, im2col/col2im and max-pooling |
 | `nn/data/dataloader.hpp` | `DataLoader(dataset, batch_size, shuffle[, drop_last])` — `num_batches()`, `reset_epoch()`, `get_batch(i)`; the shuffle is a portable Fisher-Yates, so a seed gives the same order on every platform |

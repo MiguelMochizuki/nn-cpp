@@ -5,6 +5,7 @@ add_executable(nn_tests
 	test_nn.cpp
 	test_optim.cpp
 	test_dataloader.cpp
+	test_metrics.cpp
 	test_checkpoint.cpp
 	test_kernels.cpp
 	test_parallel.cpp

@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `nn/metrics.hpp`: `confusion_matrix`, `accuracy_score`, `precision_recall_f1`, `precision_score`, `recall_score`, `f1_score` (micro, macro and weighted averages, `zero_division`), `classification_report` laid out like scikit-learn's, and the helpers `argmax_rows` and `to_labels`.
+- `train_fer2013` prints macro-F1 each epoch and a per-class report after the last one.
+
 ## [1.1.0] - 2026-11-05
 
 Adds what is needed to train a small CNN with regularisation on real image data (FER-2013). The public API of 1.0.0 is unchanged; new virtuals on `Module` and `Optimizer` have defaults, so existing subclasses compile as before.

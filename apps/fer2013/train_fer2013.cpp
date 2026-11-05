@@ -8,6 +8,7 @@
 #include "nn/data/dataloader.hpp"
 #include "nn/data/fer2013.hpp"
 #include "nn/data/transform.hpp"
+#include "nn/metrics.hpp"
 #include "nn/nn/activation.hpp"
 #include "nn/nn/batchnorm.hpp"
 #include "nn/nn/conv2d.hpp"
@@ -68,32 +69,28 @@ static std::unique_ptr<Sequential> build_model() {
 }
 
 /**
- * Fraction of correct argmax predictions over a dataset, with the model in eval mode
+ * Predicted and true classes over a dataset, with the model in eval mode
  *
  * Parameters:
  * Sequential& model: network to evaluate
  * DataLoader& loader: unshuffled loader over the evaluation set
+ * std::vector<size_t>& y_true: receives the true class of every sample
+ * std::vector<size_t>& y_pred: receives the predicted class of every sample
  *
- * Returns float: accuracy in [0, 1]; 0 for an empty loader
+ * Returns void: none
  */
-static float accuracy(Sequential& model, DataLoader& loader) {
+static void predict(Sequential& model, DataLoader& loader, std::vector<size_t>& y_true, std::vector<size_t>& y_pred) {
 	model.eval();
 	NoGradGuard no_grad;
-	size_t correct = 0, total = 0;
+	y_true.clear();
+	y_pred.clear();
 	for (size_t b = 0; b < loader.num_batches(); b++) {
 		auto [x, y] = loader.get_batch(b);
-		const Tensor& logits = model.forward(x).data();
-		size_t n = logits.shape()[0], c = logits.shape()[1];
-		for (size_t i = 0; i < n; i++) {
-			size_t best = 0;
-			for (size_t k = 1; k < c; k++) {
-				if (logits.get({i, k}) > logits.get({i, best})) best = k;
-			}
-			if (static_cast<float>(best) == y.data()[i]) correct++;
-			total++;
-		}
+		std::vector<size_t> p = argmax_rows(model.forward(x).data());
+		std::vector<size_t> t = to_labels(y);
+		y_pred.insert(y_pred.end(), p.begin(), p.end());
+		y_true.insert(y_true.end(), t.begin(), t.end());
 	}
-	return total ? static_cast<float>(correct) / static_cast<float>(total) : 0.0f;
 }
 
 /**
@@ -168,6 +165,7 @@ int main(int argc, char** argv) {
 		size_t warmup = total_steps / 10;
 		LinearWarmup sched(opt, std::make_unique<CosineAnnealingLR>(opt, total_steps - warmup), warmup);
 
+		std::vector<size_t> y_true, y_pred;
 		for (size_t epoch = 0; epoch < epochs; epoch++) {
 			model->train();
 			train_loader.reset_epoch();
@@ -182,10 +180,14 @@ int main(int argc, char** argv) {
 				sched.step();
 				epoch_loss += loss.data().get({0});
 			}
-			std::printf("epoch %zu loss %.4f val accuracy %.2f%%\n", epoch,
+			predict(*model, val_loader, y_true, y_pred);
+			std::printf("epoch %zu loss %.4f val accuracy %.2f%% macro-F1 %.4f\n", epoch,
 			            epoch_loss / static_cast<float>(train_loader.num_batches()),
-			            100.0f * accuracy(*model, val_loader));
+			            100.0f * accuracy_score(y_true, y_pred), f1_score(y_true, y_pred, 7, Average::Macro));
+			std::fflush(stdout);
 		}
+		std::printf("\nvalidation report after the last epoch:\n%s", classification_report(
+		    y_true, y_pred, 7, {"Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"}).c_str());
 		save_checkpoint(out_path, *model, &opt, static_cast<int64_t>(total_steps));
 		std::printf("saved checkpoint to %s\n", out_path.c_str());
 	} catch (const std::exception& e) {
