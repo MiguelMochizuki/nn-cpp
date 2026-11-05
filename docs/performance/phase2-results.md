@@ -88,7 +88,7 @@ Thread policy: the default stays `hardware_concurrency()` (12 here, including th
 
 ## Real MNIST (native, `NN_NUM_THREADS=8 taskset -c 0-7 train_mnist data/mnist`)
 
-Test accuracy 98.09% (tolerance 98.0%), wall 36.2 s (Phase 1: 98.25%, 38.8 s). Raw output in `docs/baseline/phase2/mnist-native.txt`. The CNN's matmuls are small, so the run is mostly serial (109% CPU).
+Test accuracy 98.09% (tolerance 98.0%), wall 36.2 s (Phase 1: 98.25%, 38.8 s). Raw output in `docs/performance/baseline/phase2/mnist-native.txt`. The CNN's matmuls are small, so the run is mostly serial (109% CPU).
 
 ## Caveats
 

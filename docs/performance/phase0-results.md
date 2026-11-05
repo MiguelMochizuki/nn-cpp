@@ -1,10 +1,10 @@
 # Phase 0 results: baseline, profile and phase ranking
 
-Machine: shared laptop, 4 P-cores with hyperthreading (cpus 0-7, 8 hardware threads) plus 4 E-cores (cpus 8-11), governor `powersave`. Data is in `docs/baseline/`. Everything below is one pinned (`taskset -c 0-7`) `NN_NATIVE=ON` run unless stated.
+Machine: shared laptop, 4 P-cores with hyperthreading (cpus 0-7, 8 hardware threads) plus 4 E-cores (cpus 8-11), governor `powersave`. Data is in `docs/performance/baseline/`. Everything below is one pinned (`taskset -c 0-7`) `NN_NATIVE=ON` run unless stated.
 
 ## Baseline (native, pinned, t8)
 
-Source: `docs/baseline/native-pinned-t8.csv`, 15 runs per row, times in ms as recorded by the harness. Spread is the harness's relative spread statistic.
+Source: `docs/performance/baseline/native-pinned-t8.csv`, 15 runs per row, times in ms as recorded by the harness. Spread is the harness's relative spread statistic.
 
 | workload | forward | backward | optimizer | total | fwd / bwd / opt share | spread |
 |---|---|---|---|---|---|---|
@@ -39,11 +39,11 @@ Context (estimate, not measured): one P-core at about 4.4 GHz with 2 FMA ports x
 
 Thread points: the library has no thread pool yet, so the t1, t2, t4, t8 and unpinned t12 files all measure single-threaded speed; the thread count only affects which CPUs the process is pinned to and the recorded label. They become meaningful after a threading phase. The committed t1, t2 and t4 files were taken with `taskset -c 0-(n-1)`, which makes no difference for a single-threaded library; `run_baseline.sh` now pins all thread points to cpus 0-7 (cpus 0/1, 2/3, 4/5, 6/7 are hyperthread siblings).
 
-Real-MNIST reference (`train_mnist`, from `docs/baseline/mnist-native.txt` and `mnist-portable.txt`): native 98.11% test accuracy, 1:42.46 wall time; portable 98.47%, 1:47.72. `train_mnist` initialises weights and shuffles without a seed, so later phases compare accuracy by tolerance, not equality.
+Real-MNIST reference (`train_mnist`, from `docs/performance/baseline/mnist-native.txt` and `mnist-portable.txt`): native 98.11% test accuracy, 1:42.46 wall time; portable 98.47%, 1:47.72. `train_mnist` initialises weights and shuffles without a seed, so later phases compare accuracy by tolerance, not equality.
 
 ## Profile (perf record -g, RelWithDebInfo, NN_NATIVE=ON, pinned to cpus 0-7)
 
-Full top-25 lists: `docs/baseline/perf-cnn_mnist.txt` and `docs/baseline/perf-mlp_wide.txt`. Percentages are self time (`--no-children`).
+Full top-25 lists: `docs/performance/baseline/perf-cnn_mnist.txt` and `docs/performance/baseline/perf-mlp_wide.txt`. Percentages are self time (`--no-children`).
 
 cnn_mnist:
 

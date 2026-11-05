@@ -15,7 +15,7 @@ The first measurement (commit d8804a6) recorded DROP: the native build gained 2.
 
 ## Method
 
-Machine: i5-12450HX, cpus 0-7 are the P-core threads, `powersave` governor, no sudo. Protocol: `NN_NUM_THREADS=8 taskset -c 0-7 apps/bench --out <csv> --label pinned`, 15 runs per row. Old and new alternated three times each (old1, new1, old2, new2, old3, new3), native first, then portable, one bench at a time. Before the runs: load average 1.35 right after the builds (1 min), gnome-shell 5.9%, claude 4.3%, ptyxis 2.1%. CSVs: `docs/baseline/phase1/{old,new}-{native,portable}-run<k>.csv`. Tables use the median of three per side. Ratio = old/new total_ms (matmul: new/old GFLOP/s), above 1 is faster. "noise" below is the larger median spread of the two sides.
+Machine: i5-12450HX, cpus 0-7 are the P-core threads, `powersave` governor, no sudo. Protocol: `NN_NUM_THREADS=8 taskset -c 0-7 apps/bench --out <csv> --label pinned`, 15 runs per row. Old and new alternated three times each (old1, new1, old2, new2, old3, new3), native first, then portable, one bench at a time. Before the runs: load average 1.35 right after the builds (1 min), gnome-shell 5.9%, claude 4.3%, ptyxis 2.1%. CSVs: `docs/performance/baseline/phase1/{old,new}-{native,portable}-run<k>.csv`. Tables use the median of three per side. Ratio = old/new total_ms (matmul: new/old GFLOP/s), above 1 is faster. "noise" below is the larger median spread of the two sides.
 
 ### Old-vs-old stability and the outlier
 
@@ -105,7 +105,7 @@ matmul/8: same note as native, an 8x8 product is too small for packing to pay of
 | native | 98.25% | 0:38.79 | 98.11%, 1:42.46 |
 | portable | 98.43% | 0:46.31 | 98.47%, 1:47.72 |
 
-Raw output in `docs/baseline/phase1/mnist-{native,portable}.txt`. The native wall time is longer than the earlier Phase 1 run (0:33.13); the machine was busier at that point (load average 2.2 at start), so treat it as noisy.
+Raw output in `docs/performance/baseline/phase1/mnist-{native,portable}.txt`. The native wall time is longer than the earlier Phase 1 run (0:33.13); the machine was busier at that point (load average 2.2 at start), so treat it as noisy.
 
 ## Known caveats
 

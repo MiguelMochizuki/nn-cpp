@@ -12,7 +12,7 @@ Proof: the test case run 500 times in a loop on build/native, 0 failures. Full c
 
 ## Thread-default measurement
 
-Method: `apps/bench --suite workloads`, 15 runs per call (the tool's default), one call per cell, 3 calls per cell, interleaved round-robin over all cells so slow drift hits every cell alike. The tables give the median of the 3 `total_ms` values, and in parentheses the max/min-1 spread across the 3 calls. Unpinned is what a user gets by default; pinned uses `taskset -c 0-7` (the 4 P-cores with their hyperthreads, so t=12 there is 12 threads on 8 CPUs). Raw per-call CSVs: `docs/baseline/followups/<config>-<label>-t<N>-r<K>.csv`.
+Method: `apps/bench --suite workloads`, 15 runs per call (the tool's default), one call per cell, 3 calls per cell, interleaved round-robin over all cells so slow drift hits every cell alike. The tables give the median of the 3 `total_ms` values, and in parentheses the max/min-1 spread across the 3 calls. Unpinned is what a user gets by default; pinned uses `taskset -c 0-7` (the 4 P-cores with their hyperthreads, so t=12 there is 12 threads on 8 CPUs). Raw per-call CSVs: `docs/performance/baseline/followups/<config>-<label>-t<N>-r<K>.csv`.
 
 Machine: i5-12450HX (4 P-cores with HT = cpus 0-7, 4 E-cores = 8-11), idle at start (load average 0.7), cpufreq governor `powersave` (could not be changed from here, so absolute numbers are noisier than a `performance` run; comparisons below are all within the same sweep). The old-vs-old spread bar of 3% holds for cnn_mnist, cnn_large, mlp_adam pinned and the portable rows; it does not hold for unpinned mlp_wide/mlp_adam at some thread counts (up to 30-40% on a single call, which is the scheduler placing threads on E-cores or sharing a core), and xor (10 us) is dominated by timer noise. The conclusions below do not rest on those cells.
 
@@ -80,7 +80,7 @@ Portable, where a cap would hurt: unpinned mlp_wide is 21.30 ms at 12 threads ag
 
 ## Packing, zero-fill and backward allocations
 
-Method: `NN_NUM_THREADS=8 taskset -c 0-7 apps/bench --suite workloads`, 3 calls per cell interleaved old/new, median of the 3 `total_ms` (max/min-1 spread in parentheses). Old is head df02721 built in a separate worktree (native and portable); new is the packing commit. Machine idle apart from a browser (CPU 5% busy during the runs). Raw CSVs: `docs/baseline/followups/packb-native/`, `packb-portable/`, and `packb-infer-*` (5 interleaved calls of `--workload infer_nograd_b256 --runs 40`, used to settle a 3% reading).
+Method: `NN_NUM_THREADS=8 taskset -c 0-7 apps/bench --suite workloads`, 3 calls per cell interleaved old/new, median of the 3 `total_ms` (max/min-1 spread in parentheses). Old is head df02721 built in a separate worktree (native and portable); new is the packing commit. Machine idle apart from a browser (CPU 5% busy during the runs). Raw CSVs: `docs/performance/baseline/followups/packb-native/`, `packb-portable/`, and `packb-infer-*` (5 interleaved calls of `--workload infer_nograd_b256 --runs 40`, used to settle a 3% reading).
 
 Fresh `perf record -g` on head (`apps/bench/profile.sh`, native, 8 threads), share of samples:
 

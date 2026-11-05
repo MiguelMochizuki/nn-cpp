@@ -6,7 +6,7 @@ Reference: commit 08af261 (Phase 2). New: branch `perf/phase3-memory`. Both Rele
 
 ## What shipped
 
-Commits `08af261..HEAD` (`git log --oneline`), oldest first. Per-change deltas are medians of three against the immediately preceding commit (native, then portable where measured); the per-step CSVs are in `docs/baseline/phase3/steps/`, the figures below are as reported in the implementer notes (uncommitted).
+Commits `08af261..HEAD` (`git log --oneline`), oldest first. Per-change deltas are medians of three against the immediately preceding commit (native, then portable where measured); the per-step CSVs are in `docs/performance/baseline/phase3/steps/`, the figures below are as reported in the implementer notes (uncommitted).
 
 | commit | change | measured delta |
 |---|---|---|
@@ -25,7 +25,7 @@ Two further commits are not performance changes: 056f715 adds the raw CSVs, and 
 
 ## Headline (medians of three, alternated old/new, `NN_NUM_THREADS=8 taskset -c 0-7`, 15 runs per row)
 
-Ratio = old/new total_ms. Max/min spread of the three runs is in brackets. Raw files: `docs/baseline/phase3/{old,new}-{native,portable}-run{1,2,3}.csv`.
+Ratio = old/new total_ms. Max/min spread of the three runs is in brackets. Raw files: `docs/performance/baseline/phase3/{old,new}-{native,portable}-run{1,2,3}.csv`.
 
 | row | native old ms | native new ms | speedup | portable old ms | portable new ms | speedup |
 |---|---|---|---|---|---|---|
@@ -47,7 +47,7 @@ Portable cnn_mnist new has an 11.3% spread across its three runs; the ratio is s
 
 ## Real MNIST (native, `NN_NUM_THREADS=8 taskset -c 0-7 train_mnist data/mnist`)
 
-Test accuracy 98.58% (9858/10000), wall 17.8 s (Phase 2: 98.09%, 36.2 s). Raw output in `docs/baseline/phase3/mnist-native.txt`. Weight init is unseeded, so the accuracy difference from Phase 2 is run-to-run variation, not an effect of this phase.
+Test accuracy 98.58% (9858/10000), wall 17.8 s (Phase 2: 98.09%, 36.2 s). Raw output in `docs/performance/baseline/phase3/mnist-native.txt`. Weight init is unseeded, so the accuracy difference from Phase 2 is run-to-run variation, not an effect of this phase.
 
 ## Behaviour and API notes (need the author's sign-off)
 
@@ -69,5 +69,5 @@ Test accuracy 98.58% (9858/10000), wall 17.8 s (Phase 2: 98.09%, 36.2 s). Raw ou
 
 ## Caveats
 
-- Timings were taken on a lightly loaded desktop (load average about 1.2 to 1.3, `docs/baseline/phase3/load.txt`); xor is too short (microseconds) to read.
+- Timings were taken on a lightly loaded desktop (load average about 1.2 to 1.3, `docs/performance/baseline/phase3/load.txt`); xor is too short (microseconds) to read.
 - Per-commit deltas in the table above are from the implementer notes; the final old/new numbers are recomputed from the committed CSVs.

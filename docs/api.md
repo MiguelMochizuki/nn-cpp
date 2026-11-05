@@ -1,0 +1,34 @@
+# API reference
+
+One row per header under `include/nn/`. Every function and class is documented in its header (see [CONTRIBUTING.md](../CONTRIBUTING.md#documentation-conventions)).
+
+| Header | Provides |
+|---|---|
+| `nn/tensor.hpp` | `Tensor`; `add`, `sub`, `mul`, `div`, `scale`, `matmul` (free functions). `Tensor::random` draws from the library's seeded stream |
+| `nn/random.hpp` | `manual_seed(seed)`, `is_seeded()`, `derive_generator(stream)` — one seed, an independent reproducible generator per component (`Tensor::random`, `DataLoader`, `Dropout`, transforms) |
+| `nn/autograd/value.hpp` | `Value` — `leaf()`, `node()`, `data()`, `grad()`, `backward()`, `zero_grad()`, `requires_grad()`, `has_grad()` (false for a non-leaf node before `backward()` reaches it, as in PyTorch where such a grad is `None`); `NoGradGuard` (scope that skips graph building, for inference). On a temporary, `data()`/`grad()` return copies, so `model.forward(x).data()` is safe |
+| `nn/autograd/ops.hpp` | Differentiable ops: `add`, `sub`, `mul`, `scale`, `sum` (all elements, or over an `axis` with `keepdim`), `mean(x, axis, keepdim)`, `rsqrt`, `transpose`, `reshape`, `matmul`, `matmul_bt` (`a * b^T` without a transpose copy), `relu`, `sigmoid`, `tanh`, `softmax`, `conv2d` (stride, padding, plus `dilation` and `groups`), `maxpool2d`, `avgpool2d`, `cross_entropy_loss` (optionally with per-class weights and label smoothing), `mse_loss` |
+| `nn/nn/module.hpp` | `Module` — base interface (`forward()`, `parameters()`, `named_parameters()`, `named_buffers()`, `train(mode)`, `eval()`, `is_training()`) |
+| `nn/nn/linear.hpp` | `Linear(in_features, out_features)` |
+| `nn/nn/conv2d.hpp` | `Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0)`, or with a `{kh, kw}` kernel plus `dilation=1, groups=1` |
+| `nn/nn/pool2d.hpp` | `MaxPool2d(kernel_size, stride)`, `AvgPool2d(kernel_size, stride)`, `GlobalAvgPool2d()` |
+| `nn/nn/batchnorm.hpp` | `BatchNorm1d(num_features, eps=1e-5, momentum=0.1)`, `BatchNorm2d(...)`; running statistics are buffers saved by checkpoints |
+| `nn/nn/dropout.hpp` | `Dropout(p=0.5)` — inverted dropout in training mode, identity in eval mode |
+| `nn/nn/flatten.hpp` | `Flatten` |
+| `nn/nn/activation.hpp` | `ReLU`, `Sigmoid`, `Tanh`, `Softmax(axis)` |
+| `nn/nn/sequential.hpp` | `Sequential` — `add(layer)`, `forward()`, `parameters()` |
+| `nn/checkpoint.hpp` | `save_checkpoint(path, model, optimizer*, step)`, `load_checkpoint(path, model, optimizer*)` |
+| `nn/nn/loss.hpp` | `cross_entropy_loss(logits, targets)` (and the class-weight / label-smoothing overload), `mse_loss(predictions, targets)` |
+| `nn/optim/optimizer.hpp` | `Optimizer` — base interface (`step()`, `zero_grad()`, `lr()`, `set_lr(lr)`) |
+| `nn/optim/sgd.hpp` | `SGD(params, lr, momentum=0)` |
+| `nn/optim/adam.hpp` | `Adam(params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8)` |
+| `nn/optim/adamw.hpp` | `AdamW(params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=1e-2)` — decoupled weight decay |
+| `nn/optim/scheduler.hpp` | `LRScheduler` (`step()`, `set_step(n)`, `step_count()`, `base_lr()`), `StepLR(opt, step_size, gamma=0.1)`, `CosineAnnealingLR(opt, t_max, eta_min=0)`, `LinearWarmup(opt, inner, warmup_steps)` |
+| `nn/optim/clip.hpp` | `clip_grad_norm(params, max_norm)` (returns the norm before clipping), `clip_grad_value(params, clip)` |
+| `nn/data/dataset.hpp` | `Dataset` — interface (`size()`, `get(index)`) |
+| `nn/data/tensor_dataset.hpp` | `TensorDataset(inputs, targets)` — rows of two tensors as samples |
+| `nn/data/subset.hpp` | `Subset(dataset, indices)`, `random_split(dataset, fractions, seed)` |
+| `nn/data/transform.hpp` | `Transform`, `Compose`, `Normalize(mean, std)`, `RandomHorizontalFlip(p)`, `RandomShift(max_shift)`, `TransformedDataset(dataset, transform)`, `compute_mean_std(dataset)` |
+| `nn/data/fer2013.hpp` | `Fer2013Dataset(csv_path, usage=, image_size=48)` — FER-2013 CSV loader (the data is not included) |
+| `nn/kernels/parallel.hpp` | `num_threads()`, `set_num_threads(n)`, `parallel_for(n_chunks, fn)`, `parallel_range(n, min_per_chunk, fn)` — fork/join thread pool used by `sgemm` (x86-64), the elementwise ops, ReLU, im2col/col2im and max-pooling |
+| `nn/data/dataloader.hpp` | `DataLoader(dataset, batch_size, shuffle[, drop_last])` — `num_batches()`, `reset_epoch()`, `get_batch(i)`; the shuffle is a portable Fisher-Yates, so a seed gives the same order on every platform |
