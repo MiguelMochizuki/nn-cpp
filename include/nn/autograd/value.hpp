@@ -65,7 +65,7 @@ private:
  *
  * Attributes:
  * Tensor data: forward value
- * Tensor grad: accumulated dL/d(data), same shape as data
+ * Tensor grad: accumulated dL/d(data), same shape as data (a non-leaf node holds an empty placeholder until backward() sizes it)
  * bool requires_grad: whether this node participates in backward
  * vector<Value> parents: inputs this node was computed from
  * function<void(const Tensor&)> backward_fn: given dL/d(this.data), accumulate into each parent's grad
@@ -77,7 +77,7 @@ struct NodeImpl {
 	std::vector<Value> parents;
 	std::function<void(const Tensor&)> backward_fn;
 
-	NodeImpl(Tensor d, bool rg);
+	NodeImpl(Tensor d, bool rg, bool allocate_grad = true);
 	~NodeImpl();
 };
 
@@ -135,7 +135,8 @@ public:
 	 *
 	 * Parameters: none
 	 *
-	 * Returns Tensor&: reference to the node's grad
+	 * Returns Tensor&: reference to the node's grad. For a non-leaf node it is
+	 * an empty placeholder (shape {0}) until backward() reaches that node
 	 */
 	Tensor& grad() const&;
 
@@ -154,6 +155,15 @@ public:
 	 * Returns bool: requires_grad flag
 	 */
 	bool requires_grad() const;
+
+	/* Whether grad() holds a gradient shaped like data(). False for a non-leaf
+	 * node that backward() has not reached yet (its grad() is an empty placeholder)
+	 *
+	 * Parameters: none
+	 *
+	 * Returns bool: true if grad() has the same shape as data()
+	 */
+	bool has_grad() const;
 
 	/* Public, identity of the underlying graph node, for use as a visited-set key
 	 *

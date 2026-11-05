@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <functional>
 
@@ -50,6 +51,28 @@ void set_num_threads(size_t n);
  * Returns void
  */
 void parallel_for(size_t n_chunks, const std::function<void(size_t)>& fn);
+
+/**
+ * Splits [0, n) into contiguous ranges and runs fn(begin, end) on each, in parallel when each
+ * range would hold at least min_per_chunk elements. fn must write only to elements in its own
+ * range, so the result does not depend on the thread count.
+ *
+ * Parameters:
+ * size_t n: Number of elements
+ * size_t min_per_chunk: Smallest range worth a thread; below 2 * this the loop runs serially
+ * Fn fn: Callable taking (size_t begin, size_t end)
+ *
+ * Returns void
+ */
+template <typename Fn>
+void parallel_range(size_t n, size_t min_per_chunk, Fn fn) {
+	size_t chunks = std::min(num_threads(), n / min_per_chunk);
+	if (chunks <= 1) {
+		fn(size_t{0}, n);
+		return;
+	}
+	parallel_for(chunks, [&](size_t c) { fn(n * c / chunks, n * (c + 1) / chunks); });
+}
 
 }  // namespace kernels
 }  // namespace nn

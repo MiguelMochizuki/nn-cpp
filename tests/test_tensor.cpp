@@ -7,6 +7,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest/doctest.h"
 #include "nn/tensor.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <cmath>
 
@@ -85,6 +86,20 @@ TEST_CASE("reshape preserves data in row-major order") {
 	CHECK(r.get({0, 0}) == 1.0f);
 	CHECK(r.get({0, 1}) == 2.0f);
 	CHECK(r.get({2, 1}) == 6.0f);
+}
+
+TEST_CASE("reshape of a temporary keeps data and shape, and leaves the source intact when copied") {
+	for (size_t n : {size_t{1}, size_t{7}, size_t{33}, size_t{257}}) {
+		Tensor t({n});
+		for (size_t i = 0; i < n; i++) t.data()[i] = static_cast<float>(i);
+		Tensor copy = t.reshape({1, n});
+		Tensor moved = Tensor(t).reshape({n, 1});
+		CHECK(copy.shape() == std::vector<size_t>{1, n});
+		CHECK(moved.shape() == std::vector<size_t>{n, 1});
+		CHECK(copy.data() == t.data());
+		CHECK(moved.data() == t.data());
+	}
+	CHECK_THROWS_AS(Tensor({2, 3}).reshape({4, 4}), TensorShapeError);
 }
 
 TEST_CASE("reshape with mismatched size throws") {
@@ -166,6 +181,60 @@ TEST_CASE("add broadcasts a smaller trailing dimension") {
 	CHECK(c.shape() == std::vector<size_t>{2, 3});
 	CHECK(c.get({0, 0}) == 11.0f);
 	CHECK(c.get({1, 2}) == 36.0f);
+}
+
+namespace {
+// Reference broadcast: walks every output index and reads each operand through its own dimensions
+Tensor reference_broadcast(const Tensor& a, const Tensor& b, float (*op)(float, float), const std::vector<size_t>& out_shape) {
+	Tensor out(out_shape);
+	size_t rank = out_shape.size();
+	for (size_t flat = 0; flat < out.size(); flat++) {
+		std::vector<size_t> idx(rank);
+		size_t rem = flat;
+		for (size_t d = rank; d-- > 0;) {
+			idx[d] = rem % out_shape[d];
+			rem /= out_shape[d];
+		}
+		auto pick = [&](const Tensor& t) {
+			std::vector<size_t> ti(t.ndim());
+			for (size_t d = 0; d < t.ndim(); d++) ti[d] = t.shape()[d] == 1 ? 0 : idx[d + rank - t.ndim()];
+			return t.get(ti);
+		};
+		out.data()[flat] = op(pick(a), pick(b));
+	}
+	return out;
+}
+}  // namespace
+
+TEST_CASE("elementwise broadcast fast paths match the index-by-index reference") {
+	auto fill = [](Tensor& t, float seed) {
+		for (size_t i = 0; i < t.size(); i++) t.data()[i] = seed + static_cast<float>((i * 7) % 11);
+	};
+	for (size_t n : {size_t{1}, size_t{7}, size_t{33}, size_t{257}}) {
+		using Shapes = std::pair<std::vector<size_t>, std::vector<size_t>>;
+		std::vector<Shapes> cases = {
+			{{3, n}, {n}},          // row
+			{{3, n}, {1, n}},       // row with leading 1
+			{{3, n}, {1}},          // scalar
+			{{3, n}, {}},           // rank-0 scalar
+			{{3, n}, {3, 1}},       // column
+			{{2, 3, n}, {3, n}},    // batch broadcast
+			{{2, 3, n}, {2, 3, 1}}, // column on 3D
+			{{2, 3, n}, {1, 1}},    // all-ones lower rank
+			{{3, 1}, {1, n}},       // both expand (general path)
+			{{n}, {n}},             // same shape
+		};
+		for (const auto& c : cases) {
+			Tensor a(c.first), b(c.second);
+			fill(a, 1.0f);
+			fill(b, 0.25f);
+			std::vector<size_t> out_shape = (a.ndim() >= b.ndim() ? a : b).shape();
+			if (c.first == std::vector<size_t>{3, 1}) out_shape = {3, n};
+			CHECK(sub(a, b).shape() == out_shape);
+			CHECK(sub(a, b).data() == reference_broadcast(a, b, +[](float x, float y) { return x - y; }, out_shape).data());
+			CHECK(sub(b, a).data() == reference_broadcast(b, a, +[](float x, float y) { return x - y; }, out_shape).data());
+		}
+	}
 }
 
 TEST_CASE("add with incompatible shapes throws") {
@@ -343,4 +412,28 @@ TEST_CASE("zero_ sets every element to zero in place") {
 	Tensor a({3}, 5.0f);
 	a.zero_();
 	for (float v : a.data()) CHECK(v == 0.0f);
+}
+
+TEST_CASE("in-place add/sub on large tensors is identical for any thread count") {
+	size_t n = 100003;
+	Tensor a({n}), b({n});
+	for (size_t i = 0; i < n; i++) {
+		a.data()[i] = static_cast<float>(i % 13) * 0.37f;
+		b.data()[i] = static_cast<float>(i % 7) * 0.11f;
+	}
+	std::vector<float> expect_add(n), expect_sub(n);
+	for (size_t i = 0; i < n; i++) {
+		expect_add[i] = a.data()[i] + b.data()[i];
+		expect_sub[i] = a.data()[i] - b.data()[i];
+	}
+	size_t saved = nn::kernels::num_threads();
+	for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+		nn::kernels::set_num_threads(threads);
+		Tensor x = a, y = a;
+		x += b;
+		y -= b;
+		CHECK(x.data() == expect_add);
+		CHECK(y.data() == expect_sub);
+	}
+	nn::kernels::set_num_threads(saved);
 }

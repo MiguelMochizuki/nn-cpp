@@ -15,7 +15,8 @@ namespace {
 size_t g_live_node_count = 0;
 }
 
-NodeImpl::NodeImpl(Tensor d, bool rg) : data(d), grad(Tensor(d.shape(), 0.0f)), requires_grad(rg) {
+NodeImpl::NodeImpl(Tensor d, bool rg, bool allocate_grad)
+	: data(std::move(d)), grad(allocate_grad ? data.shape() : std::vector<size_t>{0}, 0.0f), requires_grad(rg) {
 	g_live_node_count++;
 }
 
@@ -37,7 +38,7 @@ bool NoGradGuard::grad_enabled() { return g_grad_enabled; }
 
 Value Value::node(Tensor data, std::vector<Value> parents, std::function<void(const Tensor&)> backward_fn) {
 	if (!g_grad_enabled) return leaf(std::move(data), false);
-	auto impl = std::make_shared<NodeImpl>(std::move(data), true);
+	auto impl = std::make_shared<NodeImpl>(std::move(data), true, false);
 	impl->parents = std::move(parents);
 	impl->backward_fn = std::move(backward_fn);
 	return Value(impl);
@@ -48,6 +49,7 @@ Tensor Value::data() && { return impl_->data; }
 Tensor& Value::grad() const& { return impl_->grad; }
 Tensor Value::grad() && { return impl_->grad; }
 bool Value::requires_grad() const { return impl_->requires_grad; }
+bool Value::has_grad() const { return impl_->grad.shape() == impl_->data.shape(); }
 NodeImpl* Value::impl() const { return impl_.get(); }
 
 void Value::zero_grad() const {
