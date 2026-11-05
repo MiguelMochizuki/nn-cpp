@@ -1,0 +1,2 @@
+add_executable(train_fer2013 fer2013/train_fer2013.cpp)
+target_link_libraries(train_fer2013 PRIVATE nn_core)

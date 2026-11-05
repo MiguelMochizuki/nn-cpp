@@ -63,6 +63,39 @@ Value scale(const Value& a, float scalar);
  */
 Value sum(const Value& x);
 
+/* Public, differentiable sum along one axis
+ *
+ * Parameters:
+ * Value x: operand, any shape
+ * int axis: dimension to reduce; negative counts from the end; out of range throws
+ * bool keepdim: keep the reduced axis with size 1 instead of dropping it
+ *
+ * Returns Value: the sum over axis. Dropping the only axis of a 1-D tensor gives shape {1}.
+ * Backward broadcasts grad_out over the reduced axis. Results do not depend on thread count
+ */
+Value sum(const Value& x, int axis, bool keepdim = false);
+
+/* Public, differentiable mean along one axis
+ *
+ * Parameters:
+ * Value x: operand, any shape
+ * int axis: dimension to reduce; negative counts from the end; out of range throws
+ * bool keepdim: keep the reduced axis with size 1 instead of dropping it
+ *
+ * Returns Value: the sum over axis divided by the axis length. Dropping the only axis of a
+ * 1-D tensor gives shape {1}. Backward broadcasts grad_out / length over the reduced axis
+ */
+Value mean(const Value& x, int axis, bool keepdim = false);
+
+/* Public, differentiable reciprocal square root
+ *
+ * Parameters:
+ * Value x: operand; undefined (inf or NaN) for x <= 0
+ *
+ * Returns Value: 1 / sqrt(x) elementwise; backward multiplies grad_out by -0.5 * x^-1.5
+ */
+Value rsqrt(const Value& x);
+
 /* Public, differentiable dimension permutation
  *
  * Parameters:
@@ -164,6 +197,26 @@ Value softmax(const Value& x, int axis);
  */
 Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride, int padding);
 
+/* Public, differentiable 2D convolution with dilation and groups
+ *
+ * Parameters:
+ * Value x: input, shape {N, Cin, H, W}
+ * Value weight: kernel, shape {Cout, Cin/groups, kH, kW}; kH and kW may differ
+ * Value bias: per-output-channel bias, shape {Cout}
+ * int stride: convolution stride, applied to both spatial dimensions
+ * int padding: zero-padding applied to both spatial dimensions before convolving
+ * int dilation: spacing between kernel taps, at least 1
+ * int groups: number of channel groups; must divide Cin and Cout (groups == Cin is depthwise)
+ *
+ * Returns Value: shape {N, Cout, H_out, W_out}, where H_out = (H + 2*padding - dilation*(kH-1) - 1) /
+ * stride + 1 and W_out analogously. Throws TensorShapeError on a bad groups/dilation/stride value,
+ * a channel mismatch or an effective kernel larger than the padded input. With dilation == 1 and
+ * groups == 1 it calls the 5-argument overload, so results are bitwise identical to it; otherwise
+ * it runs a per-group im2col + sgemm path, batch-parallel with results independent of thread count
+ */
+Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride, int padding, int dilation,
+	int groups);
+
 /* Public, differentiable 2D max pooling
  *
  * Parameters:
@@ -177,6 +230,20 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
  */
 Value maxpool2d(const Value& x, size_t kernel_size, size_t stride);
 
+/* Public, differentiable 2D average pooling
+ *
+ * Parameters:
+ * Value x: input, shape {N, C, H, W}
+ * size_t kernel_size: pooling window side length, applied to both spatial dimensions; larger
+ * than H or W (or zero) throws TensorShapeError
+ * size_t stride: pooling stride, applied to both spatial dimensions; zero throws
+ *
+ * Returns Value: shape {N, C, H_out, W_out}, same size rule as maxpool2d; each element is the
+ * mean of its window. Backward adds grad_out / kernel_size^2 to every window element,
+ * accumulating where windows overlap. Results do not depend on thread count
+ */
+Value avgpool2d(const Value& x, size_t kernel_size, size_t stride);
+
 /* Public, differentiable fused log-softmax + negative-log-likelihood loss
  *
  * Parameters:
@@ -188,6 +255,24 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride);
  * targets[n]]; backward is the fused (softmax(logits) - one_hot(targets)) / N
  */
 Value cross_entropy_loss(const Value& logits, const Tensor& targets);
+
+/* Public, differentiable class-weighted, label-smoothed cross entropy
+ *
+ * Parameters:
+ * Value logits: raw model output, shape {N, num_classes}
+ * Tensor targets: class index per sample stored as a float, shape {N}
+ * Tensor class_weights: per-class weight, shape {num_classes}; an empty tensor is not allowed
+ * (use the 2-argument overload for the unweighted loss)
+ * float label_smoothing: s in [0, 1), the share of the target mass spread uniformly over all classes
+ *
+ * Returns Value: scalar shape {1}, sum_n w[y_n] * l_n / sum_n w[y_n] with
+ * l_n = (1-s) * (-log p[y_n]) + s * mean_c(-log p[c]); backward is fused,
+ * w[y_n] / sum(w[y]) * (softmax - (1-s) * one_hot - s / num_classes). Throws TensorShapeError on a
+ * shape mismatch, std::invalid_argument on a target outside [0, num_classes), a label_smoothing
+ * outside [0, 1) or a zero total weight
+ */
+Value cross_entropy_loss(const Value& logits, const Tensor& targets, const Tensor& class_weights,
+	float label_smoothing = 0.0f);
 
 /* Public, differentiable mean squared error
  *

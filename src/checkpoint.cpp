@@ -178,11 +178,30 @@ Entry tensor_entry(const std::string& name, const Tensor& t) {
 	return e;
 }
 
+/**
+ * Lists the model's buffers, rejecting names that collide with a parameter or each other
+ *
+ * Parameters:
+ * const Module& model: Model to inspect
+ *
+ * Returns std::vector<std::pair<std::string, Tensor*>>: The buffers; throws std::runtime_error on a collision
+ */
+std::vector<std::pair<std::string, Tensor*>> checked_buffers(const Module& model) {
+	auto buffers = model.named_buffers();
+	std::set<std::string> names;
+	for (const auto& p : model.named_parameters()) names.insert(p.first);
+	for (const auto& b : buffers) {
+		if (!names.insert(b.first).second) throw std::runtime_error("checkpoint: buffer name collides: " + b.first);
+	}
+	return buffers;
+}
+
 }  // namespace
 
 void save_checkpoint(const std::string& path, const Module& model, const Optimizer* optimizer, int64_t step) {
 	std::vector<Entry> entries;
 	for (const auto& p : model.named_parameters()) entries.push_back(tensor_entry("model." + p.first, p.second.data()));
+	for (const auto& b : checked_buffers(model)) entries.push_back(tensor_entry("model." + b.first, *b.second));
 	if (optimizer) {
 		for (const auto& st : optimizer->state()) entries.push_back(tensor_entry("optim." + st.first, st.second));
 	}
@@ -220,8 +239,10 @@ int64_t load_checkpoint(const std::string& path, Module& model, Optimizer* optim
 
 	auto params = model.named_parameters();
 	std::string problems;
+	auto buffers = checked_buffers(model);
 	std::set<std::string> expected;
 	for (const auto& p : params) expected.insert("model." + p.first);
+	for (const auto& b : buffers) expected.insert("model." + b.first);
 	int64_t step = 0;
 	bool has_step = false;
 	OptimizerState optimizer_state;
@@ -243,6 +264,12 @@ int64_t load_checkpoint(const std::string& path, Module& model, Optimizer* optim
 		if (it == entries.end() || it->is_int) problems += " missing:" + name;
 		else if (it->shape != p.second.data().shape()) problems += " shape-mismatch:" + name;
 	}
+	for (const auto& b : buffers) {
+		std::string name = "model." + b.first;
+		auto it = std::find_if(entries.begin(), entries.end(), [&](const Entry& e) { return e.name == name; });
+		if (it == entries.end() || it->is_int) problems += " missing:" + name;
+		else if (it->shape != b.second->shape()) problems += " shape-mismatch:" + name;
+	}
 	if (!problems.empty()) throw std::runtime_error("load_checkpoint: checkpoint does not match model:" + problems);
 
 	// The optimizer validates all-or-nothing and throws before any model weight is touched.
@@ -254,6 +281,11 @@ int64_t load_checkpoint(const std::string& path, Module& model, Optimizer* optim
 		std::string name = "model." + p.first;
 		auto it = std::find_if(entries.begin(), entries.end(), [&](const Entry& e) { return e.name == name; });
 		p.second.data().data() = it->data;
+	}
+	for (const auto& b : buffers) {
+		std::string name = "model." + b.first;
+		auto it = std::find_if(entries.begin(), entries.end(), [&](const Entry& e) { return e.name == name; });
+		b.second->data() = it->data;
 	}
 	return step;
 }

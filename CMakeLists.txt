@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(nn_cpp VERSION 1.0.1 LANGUAGES CXX)
+project(nn_cpp VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,7 @@ option(NN_NATIVE "Compile with -march=native" OFF)
 
 add_library(nn_core STATIC
 	src/tensor.cpp
+	src/random.cpp
 	src/kernels/gemm.cpp
 	src/kernels/parallel.cpp
 	src/autograd/value.cpp
@@ -24,12 +25,20 @@ add_library(nn_core STATIC
 	src/nn/linear.cpp
 	src/nn/conv2d.cpp
 	src/nn/pool2d.cpp
+	src/nn/dropout.cpp
+	src/nn/batchnorm.cpp
 	src/nn/activation.cpp
 	src/nn/sequential.cpp
 	src/checkpoint.cpp
 	src/optim/sgd.cpp
 	src/optim/adam.cpp
+	src/optim/adamw.cpp
+	src/optim/scheduler.cpp
+	src/optim/clip.cpp
 	src/data/dataloader.cpp
+	src/data/fer2013.cpp
+	src/data/subset.cpp
+	src/data/transform.cpp
 )
 
 target_include_directories(nn_core PUBLIC
@@ -70,7 +79,7 @@ install(TARGETS nn_core EXPORT nn_cppTargets
 	ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/nn DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(NN_BUILD_APPS)
-	install(TARGETS xor_demo train_mnist bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+	install(TARGETS xor_demo train_mnist train_fer2013 bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 set(NN_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/nn_cpp)

@@ -5,11 +5,13 @@
  */
 
 #include "nn/autograd/ops.hpp"
+#include "nn/kernels/gemm.hpp"
 #include "nn/kernels/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace nn {
 
@@ -214,6 +216,61 @@ Tensor insert_axis(const Tensor& t, int axis) {
 	return t.reshape(new_shape);
 }
 
+/**
+ * Shared body of the axis sum and mean
+ *
+ * Parameters:
+ * const Value& x: Operand
+ * int axis: Dimension to reduce, negative counts from the end
+ * bool keepdim: Keep the reduced axis with size 1
+ * bool average: Divide by the axis length
+ *
+ * Returns Value: The reduced Value; each output element is summed serially in axis order,
+ * so the result is independent of the thread count
+ */
+Value reduce_axis(const Value& x, int axis, bool keepdim, bool average) {
+	const std::vector<size_t>& shape = x.data().shape();
+	int nd = static_cast<int>(shape.size());
+	if (axis < -nd || axis >= nd) throw TensorIndexError();
+	size_t ax = static_cast<size_t>(axis < 0 ? axis + nd : axis);
+	size_t n = shape[ax], outer = 1, inner = 1;
+	if (n == 0) throw TensorShapeError();  // would divide by zero in mean and has no defined max
+	for (size_t i = 0; i < ax; i++) outer *= shape[i];
+	for (size_t i = ax + 1; i < shape.size(); i++) inner *= shape[i];
+	std::vector<size_t> out_shape;
+	for (size_t i = 0; i < shape.size(); i++) {
+		if (i != ax) out_shape.push_back(shape[i]);
+		else if (keepdim) out_shape.push_back(1);
+	}
+	if (out_shape.empty()) out_shape.push_back(1);
+	float factor = average ? 1.0f / static_cast<float>(n) : 1.0f;
+	Tensor result(out_shape);
+	const float* src = x.data().data().data();
+	float* dst = result.data().data();
+	size_t outputs = outer * inner;
+	kernels::parallel_range(outputs, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, n)),
+	                        [=](size_t lo, size_t hi) {
+		for (size_t j = lo; j < hi; j++) {
+			size_t base = (j / inner) * n * inner + j % inner;
+			float total = 0.0f;
+			for (size_t k = 0; k < n; k++) total += src[base + k * inner];
+			dst[j] = average ? total * factor : total;
+		}
+	});
+	return Value::node(std::move(result), {x}, [x, n, inner, outputs, factor](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		const float* g = grad_out.data().data();
+		float* dx = x.grad().data().data();
+		kernels::parallel_range(outputs, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, n)),
+		                        [=](size_t lo, size_t hi) {
+			for (size_t j = lo; j < hi; j++) {
+				size_t base = (j / inner) * n * inner + j % inner;
+				for (size_t k = 0; k < n; k++) dx[base + k * inner] += g[j] * factor;
+			}
+		});
+	});
+}
+
 }  // namespace
 
 Value add(const Value& a, const Value& b) {
@@ -260,6 +317,22 @@ Value sum(const Value& x) {
 			Tensor ones(x.data().shape(), grad_out.data()[0]);
 			x.grad() += ones;
 		}
+	});
+}
+
+Value sum(const Value& x, int axis, bool keepdim) { return reduce_axis(x, axis, keepdim, false); }
+
+Value mean(const Value& x, int axis, bool keepdim) { return reduce_axis(x, axis, keepdim, true); }
+
+Value rsqrt(const Value& x) {
+	Tensor result = x.data();
+	for (float& v : result.data()) v = 1.0f / std::sqrt(v);
+	return Value::node(std::move(result), {x}, [x](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		const float* in = x.data().data().data();
+		const float* g = grad_out.data().data();
+		float* dst = x.grad().data().data();
+		for (size_t i = 0; i < grad_out.size(); i++) dst[i] += -0.5f * std::pow(in[i], -1.5f) * g[i];
 	});
 }
 
@@ -446,6 +519,141 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
 		});
 }
 
+namespace {
+/**
+ * Fills the im2col matrix of one group of one sample, honouring dilation
+ *
+ * Parameters:
+ * const float* x: Start of the group's Cg input channels, each H x W
+ * float* col: Output, (Cg * kh * kw) x (h_out * w_out), row-major
+ * size_t Cg, H, W, kh, kw, h_out, w_out: Geometry
+ * size_t stride, padding, dilation: Convolution parameters
+ *
+ * Returns void
+ */
+void group_im2col(const float* x, float* col, size_t Cg, size_t H, size_t W, size_t kh, size_t kw, size_t h_out,
+	size_t w_out, size_t stride, size_t padding, size_t dilation) {
+	for (size_t c = 0; c < Cg; c++)
+		for (size_t i = 0; i < kh; i++)
+			for (size_t j = 0; j < kw; j++) {
+				float* row = col + ((c * kh + i) * kw + j) * h_out * w_out;
+				for (size_t oh = 0; oh < h_out; oh++)
+					for (size_t ow = 0; ow < w_out; ow++) {
+						// Unsigned wrap-around turns negative (padding) positions into huge values the bounds test rejects
+						size_t ih = oh * stride + i * dilation - padding;
+						size_t iw = ow * stride + j * dilation - padding;
+						row[oh * w_out + ow] = (ih < H && iw < W) ? x[(c * H + ih) * W + iw] : 0.0f;
+					}
+			}
+}
+
+/**
+ * Adds the gradient of one group's im2col matrix back into the input, the transpose of group_im2col
+ *
+ * Parameters: as group_im2col, with const float* col read and float* x accumulated into
+ *
+ * Returns void
+ */
+void group_col2im(const float* col, float* x, size_t Cg, size_t H, size_t W, size_t kh, size_t kw, size_t h_out,
+	size_t w_out, size_t stride, size_t padding, size_t dilation) {
+	for (size_t c = 0; c < Cg; c++)
+		for (size_t i = 0; i < kh; i++)
+			for (size_t j = 0; j < kw; j++) {
+				const float* row = col + ((c * kh + i) * kw + j) * h_out * w_out;
+				for (size_t oh = 0; oh < h_out; oh++)
+					for (size_t ow = 0; ow < w_out; ow++) {
+						size_t ih = oh * stride + i * dilation - padding;
+						size_t iw = ow * stride + j * dilation - padding;
+						if (ih < H && iw < W) x[(c * H + ih) * W + iw] += row[oh * w_out + ow];
+					}
+			}
+}
+}  // namespace
+
+Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride, int padding, int dilation,
+	int groups) {
+	if (dilation == 1 && groups == 1) return conv2d(x, weight, bias, stride, padding);
+	if (x.data().ndim() != 4 || weight.data().ndim() != 4) throw TensorShapeError();
+	if (stride <= 0 || padding < 0 || dilation <= 0 || groups <= 0) throw TensorShapeError();
+	size_t G = static_cast<size_t>(groups), D = static_cast<size_t>(dilation);
+	size_t S = static_cast<size_t>(stride), P = static_cast<size_t>(padding);
+	size_t Cout = weight.data().shape()[0], Cg = weight.data().shape()[1];
+	size_t kh = weight.data().shape()[2], kw = weight.data().shape()[3];
+	size_t N = x.data().shape()[0], Cin = x.data().shape()[1];
+	size_t H = x.data().shape()[2], W = x.data().shape()[3];
+	if (Cin % G != 0 || Cout % G != 0 || Cg != Cin / G || bias.data().size() != Cout || kh == 0 || kw == 0) {
+		throw TensorShapeError();
+	}
+	size_t ekh = D * (kh - 1) + 1, ekw = D * (kw - 1) + 1;
+	if (ekh > H + 2 * P || ekw > W + 2 * P) throw TensorShapeError();
+	size_t h_out = (H + 2 * P - ekh) / S + 1, w_out = (W + 2 * P - ekw) / S + 1;
+	size_t hw = h_out * w_out, K = Cg * kh * kw, Cog = Cout / G;
+	size_t x_sample = Cin * H * W, y_sample = Cout * hw, w_size = Cout * K;
+
+	Tensor result({N, Cout, h_out, w_out}, 0.0f);
+	{
+		const float* xd = x.data().data().data();
+		const float* wd = weight.data().data().data();
+		const float* bd = bias.data().data().data();
+		float* yd = result.data().data();
+		kernels::parallel_range(N, 1, [=](size_t lo, size_t hi) {
+			std::vector<float> col(K * hw);
+			for (size_t n = lo; n < hi; n++)
+				for (size_t g = 0; g < G; g++) {
+					group_im2col(xd + n * x_sample + g * Cg * H * W, col.data(), Cg, H, W, kh, kw, h_out, w_out, S, P, D);
+					float* y = yd + n * y_sample + g * Cog * hw;
+					kernels::sgemm(false, false, Cog, hw, K, wd + g * Cog * K, K, col.data(), hw, y, hw, false);
+					for (size_t c = 0; c < Cog; c++)
+						for (size_t i = 0; i < hw; i++) y[c * hw + i] += bd[g * Cog + c];
+				}
+		});
+	}
+
+	std::vector<size_t> x_shape = x.data().shape();
+	return Value::node(std::move(result), {x, weight, bias},
+		[=](const Tensor& grad_out) {
+			const float* go = grad_out.data().data();
+			const float* xd = x.data().data().data();
+			const float* wd = weight.data().data().data();
+			bool need_x = x.requires_grad(), need_w = weight.requires_grad();
+			Tensor grad_x(x_shape, 0.0f);
+			// Per-sample weight gradients, summed in sample order below so the result is thread-count independent
+			std::vector<float> gw(need_w ? N * w_size : 0);
+			float* gxd = grad_x.data().data();
+			float* gwd = gw.data();
+			kernels::parallel_range(N, 1, [=](size_t lo, size_t hi) {
+				std::vector<float> col(K * hw);
+				for (size_t n = lo; n < hi; n++)
+					for (size_t g = 0; g < G; g++) {
+						const float* gy = go + n * y_sample + g * Cog * hw;
+						if (need_w) {
+							group_im2col(xd + n * x_sample + g * Cg * H * W, col.data(), Cg, H, W, kh, kw, h_out, w_out, S, P, D);
+							kernels::sgemm(false, true, Cog, K, hw, gy, hw, col.data(), hw,
+								gwd + n * w_size + g * Cog * K, K, false);
+						}
+						if (need_x) {
+							kernels::sgemm(true, false, K, hw, Cog, wd + g * Cog * K, K, gy, hw, col.data(), hw, false);
+							group_col2im(col.data(), gxd + n * x_sample + g * Cg * H * W, Cg, H, W, kh, kw, h_out, w_out, S, P, D);
+						}
+					}
+			});
+			if (bias.requires_grad()) {
+				Tensor grad_bias({Cout}, 0.0f);
+				for (size_t n = 0; n < N; n++)
+					for (size_t c = 0; c < Cout; c++)
+						for (size_t i = 0; i < hw; i++) grad_bias.data()[c] += go[n * y_sample + c * hw + i];
+				bias.grad() += grad_bias;
+			}
+			if (need_w) {
+				Tensor grad_weight(weight.data().shape(), 0.0f);
+				for (size_t n = 0; n < N; n++)
+					for (size_t i = 0; i < w_size; i++) grad_weight.data()[i] += gw[n * w_size + i];
+				weight.grad() += grad_weight;
+			}
+			if (need_x) x.grad() += grad_x;
+		});
+}
+
 Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 	if (x.data().ndim() != 4) {
 		throw TensorShapeError();
@@ -511,6 +719,73 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 	});
 }
 
+Value avgpool2d(const Value& x, size_t kernel_size, size_t stride) {
+	if (x.data().ndim() != 4) {
+		throw TensorShapeError();
+	}
+	if (kernel_size == 0 || stride == 0) {
+		throw TensorShapeError();
+	}
+	size_t N = x.data().shape()[0];
+	size_t C = x.data().shape()[1];
+	size_t H = x.data().shape()[2];
+	size_t W = x.data().shape()[3];
+	if (kernel_size > H || kernel_size > W) {
+		throw TensorShapeError();
+	}
+	Conv2dOutputSize out_size = conv2d_output_size(H, W, kernel_size, kernel_size, stride, 0);
+	size_t h_out = out_size.h_out;
+	size_t w_out = out_size.w_out;
+
+	Tensor result({N, C, h_out, w_out});
+	const float* x_data = x.data().data().data();
+	float* result_data = result.data().data();
+	size_t out_plane = h_out * w_out;
+	float inv_area = 1.0f / static_cast<float>(kernel_size * kernel_size);
+
+	// Each (n, c) plane reads and writes only its own slices, so planes can run on separate threads
+	size_t chunk = std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, out_plane * kernel_size * kernel_size));
+	kernels::parallel_range(N * C, chunk, [=](size_t p_lo, size_t p_hi) {
+		for (size_t p = p_lo; p < p_hi; p++) {
+			const float* plane = x_data + p * H * W;
+			for (size_t oh = 0; oh < h_out; oh++) {
+				for (size_t ow = 0; ow < w_out; ow++) {
+					float acc = 0.0f;
+					for (size_t ph = 0; ph < kernel_size; ph++) {
+						const float* row = plane + (oh * stride + ph) * W + ow * stride;
+						for (size_t pw = 0; pw < kernel_size; pw++) acc += row[pw];
+					}
+					result_data[p * out_plane + oh * w_out + ow] = acc * inv_area;
+				}
+			}
+		}
+	});
+
+	return Value::node(std::move(result), {x}, [x, N, C, H, W, h_out, w_out, kernel_size, stride, inv_area](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		if (x.grad().shape() != x.data().shape()) throw TensorShapeError();
+		const float* g = grad_out.data().data();
+		float* dst = x.grad().data().data();
+		size_t out_plane = h_out * w_out;
+		// Plane p only touches its own input and output slices, so planes write disjoint ranges
+		size_t chunk = std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, out_plane * kernel_size * kernel_size));
+		kernels::parallel_range(N * C, chunk, [=](size_t p_lo, size_t p_hi) {
+			for (size_t p = p_lo; p < p_hi; p++) {
+				float* plane = dst + p * H * W;
+				for (size_t oh = 0; oh < h_out; oh++) {
+					for (size_t ow = 0; ow < w_out; ow++) {
+						float share = g[p * out_plane + oh * w_out + ow] * inv_area;
+						for (size_t ph = 0; ph < kernel_size; ph++) {
+							float* row = plane + (oh * stride + ph) * W + ow * stride;
+							for (size_t pw = 0; pw < kernel_size; pw++) row[pw] += share;
+						}
+					}
+				}
+			}
+		});
+	});
+}
+
 Value cross_entropy_loss(const Value& logits, const Tensor& targets) {
 	const Tensor& logits_data = logits.data();
 	if (logits_data.ndim() != 2) {
@@ -553,6 +828,72 @@ Value cross_entropy_loss(const Value& logits, const Tensor& targets) {
 		for (float& v : local_grad.data()) v *= grad_scale;
 		logits.grad() += local_grad;
 	});
+}
+
+Value cross_entropy_loss(const Value& logits, const Tensor& targets, const Tensor& class_weights,
+	float label_smoothing) {
+	const Tensor& logits_data = logits.data();
+	if (logits_data.ndim() != 2) throw TensorShapeError();
+	size_t N = logits_data.shape()[0];
+	size_t C = logits_data.shape()[1];
+	if (targets.ndim() != 1 || targets.size() != N) throw TensorShapeError();
+	if (class_weights.ndim() != 1 || class_weights.size() != C) throw TensorShapeError();
+	if (!(label_smoothing >= 0.0f && label_smoothing < 1.0f)) {
+		throw std::invalid_argument("cross_entropy_loss: label_smoothing must be in [0, 1)");
+	}
+	for (float w : class_weights.data()) {
+		if (!(std::isfinite(w) && w >= 0.0f)) {
+			throw std::invalid_argument("cross_entropy_loss: class weights must be finite and >= 0");
+		}
+	}
+	std::vector<size_t> target_idx(N);
+	double total_weight = 0.0;
+	for (size_t n = 0; n < N; n++) {
+		float t = std::round(targets.data()[n]);
+		if (!(t >= 0.0f && t < static_cast<float>(C))) {
+			throw std::invalid_argument("cross_entropy_loss: target out of range");
+		}
+		target_idx[n] = static_cast<size_t>(t);
+		total_weight += class_weights.data()[target_idx[n]];
+	}
+	if (!(total_weight > 0.0)) throw std::invalid_argument("cross_entropy_loss: total sample weight is zero");
+
+	Tensor softmax_val(logits_data.shape());
+	double total_loss = 0.0;
+	const float inv_c = 1.0f / static_cast<float>(C);
+	for (size_t n = 0; n < N; n++) {
+		const float* row = logits_data.data().data() + n * C;
+		float max_val = row[0];
+		for (size_t c = 1; c < C; c++) max_val = std::max(max_val, row[c]);
+		float sum_exp = 0.0f;
+		for (size_t c = 0; c < C; c++) sum_exp += std::exp(row[c] - max_val);
+		float log_sum_exp = std::log(sum_exp);
+		float mean_nll = 0.0f;
+		for (size_t c = 0; c < C; c++) {
+			float log_prob = row[c] - max_val - log_sum_exp;
+			softmax_val.data()[n * C + c] = std::exp(log_prob);
+			mean_nll -= log_prob * inv_c;
+		}
+		float nll = -(row[target_idx[n]] - max_val - log_sum_exp);
+		float l_n = (1.0f - label_smoothing) * nll + label_smoothing * mean_nll;
+		total_loss += static_cast<double>(class_weights.data()[target_idx[n]]) * l_n;
+	}
+	Tensor result({1}, static_cast<float>(total_loss / total_weight));
+	float inv_total = static_cast<float>(1.0 / total_weight);
+	return Value::node(std::move(result), {logits},
+		[logits, softmax_val, target_idx, class_weights, N, C, label_smoothing, inv_total](const Tensor& grad_out) {
+			if (!logits.requires_grad()) return;
+			Tensor local_grad = softmax_val;
+			float g = grad_out.data()[0] * inv_total;
+			for (size_t n = 0; n < N; n++) {
+				float scale = g * class_weights.data()[target_idx[n]];
+				float* row = local_grad.data().data() + n * C;
+				for (size_t c = 0; c < C; c++) row[c] -= label_smoothing / static_cast<float>(C);
+				row[target_idx[n]] -= 1.0f - label_smoothing;
+				for (size_t c = 0; c < C; c++) row[c] *= scale;
+			}
+			logits.grad() += local_grad;
+		});
 }
 
 Value mse_loss(const Value& predictions, const Value& targets) {

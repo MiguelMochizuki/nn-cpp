@@ -6,6 +6,17 @@
 
 #include "doctest/doctest.h"
 #include "nn/data/dataloader.hpp"
+#include "nn/data/subset.hpp"
+#include "nn/data/fer2013.hpp"
+#include "nn/data/tensor_dataset.hpp"
+#include "nn/data/transform.hpp"
+#include "nn/random.hpp"
+
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <stdexcept>
 
 using namespace nn;
 
@@ -79,4 +90,326 @@ TEST_CASE("every batch's image-encoded index matches its target-encoded index af
 			CHECK(x.data().get({i, 0}) == y.get({i, 0}));
 		}
 	}
+}
+
+TEST_CASE("TensorDataset returns row slices with the remaining shape") {
+	TensorDataset ds(Tensor({3, 2, 2}, std::vector<float>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}),
+					 Tensor({3}, std::vector<float>{5, 6, 7}));
+	CHECK(ds.size() == 3);
+	auto [x, y] = ds.get(1);
+	CHECK(x.shape() == std::vector<size_t>{2, 2});
+	CHECK(x.data() == std::vector<float>{4, 5, 6, 7});
+	CHECK(y.shape().empty());
+	CHECK(y.data()[0] == 6.0f);
+	CHECK_THROWS_AS(ds.get(3), TensorIndexError);
+	CHECK_THROWS_AS(TensorDataset(Tensor({3, 1}, 0.0f), Tensor({2}, 0.0f)), TensorShapeError);
+	DataLoader loader(ds, 2, false);
+	CHECK(loader.get_batch(0).second.shape() == std::vector<size_t>{2});
+}
+
+TEST_CASE("Subset selects and validates indices") {
+	IndexEncodingDataset base(5);
+	Subset sub(base, {4, 0});
+	CHECK(sub.size() == 2);
+	CHECK(sub.get(0).first.data()[0] == 4.0f);
+	CHECK_THROWS_AS(sub.get(2), TensorIndexError);
+	CHECK_THROWS_AS(Subset(base, {5}), TensorIndexError);
+}
+
+TEST_CASE("random_split is reproducible, disjoint and covering") {
+	IndexEncodingDataset base(10);
+	auto ids = [](const Subset& s) {
+		std::vector<float> v;
+		for (size_t i = 0; i < s.size(); i++) v.push_back(s.get(i).first.data()[0]);
+		return v;
+	};
+	auto a = random_split(base, {0.7, 0.3}, 1);
+	auto b = random_split(base, {0.7, 0.3}, 1);
+	auto c = random_split(base, {0.7, 0.3}, 2);
+	CHECK(a[0].size() + a[1].size() == 10);
+	CHECK(ids(a[0]) == ids(b[0]));
+	CHECK(ids(a[0]) != ids(c[0]));
+	std::set<float> seen;
+	for (auto& s : a) for (float v : ids(s)) seen.insert(v);
+	CHECK(seen.size() == 10);
+	auto r = random_split(base, {0.33, 0.33, 0.34}, 0);  // floors 3,3,3, remainder to the last
+	CHECK(r[2].size() == 4);
+}
+
+TEST_CASE("random_split permutation is pinned for a fixed seed and covers every index once") {
+	IndexEncodingDataset base(10);
+	auto parts = random_split(base, {0.5, 0.5}, 42);
+	std::vector<int> order;
+	for (auto& s : parts) for (size_t i = 0; i < s.size(); i++) order.push_back(static_cast<int>(s.get(i).first.data()[0]));
+	CHECK(order == std::vector<int>{1, 3, 9, 7, 6, 0, 8, 4, 5, 2});
+	std::vector<int> sorted = order;
+	std::sort(sorted.begin(), sorted.end());
+	for (int i = 0; i < 10; i++) CHECK(sorted[i] == i);
+}
+
+TEST_CASE("random_split folds the high seed bits into the engine seed") {
+	IndexEncodingDataset base(10);
+	auto first = [&](uint64_t seed) {
+		std::vector<float> v;
+		auto parts = random_split(base, {0.5, 0.5}, seed);
+		for (size_t i = 0; i < parts[0].size(); i++) v.push_back(parts[0].get(i).first.data()[0]);
+		return v;
+	};
+	CHECK(first(5) != first(5 + (uint64_t{1} << 32)));
+	// high and low halves cancel: 5 ^ 0 == 0 ^ 5, so these seeds fold to the same engine seed
+	CHECK(first(5) == first(uint64_t{5} << 32));
+}
+
+TEST_CASE("a seeded DataLoader epoch has a pinned order and visits every index once") {
+	IndexEncodingDataset base(10);
+	manual_seed(42);
+	DataLoader loader(base, 10, true);
+	auto order = [&]() {
+		Value x = loader.get_batch(0).first;
+		std::vector<int> v;
+		for (size_t i = 0; i < 10; i++) v.push_back(static_cast<int>(x.data().get({i, 0})));
+		return v;
+	};
+	CHECK(order() == std::vector<int>{1, 2, 3, 7, 6, 8, 0, 5, 9, 4});
+	std::vector<int> sorted = order();
+	std::sort(sorted.begin(), sorted.end());
+	for (int i = 0; i < 10; i++) CHECK(sorted[i] == i);
+}
+
+TEST_CASE("random_split rejects bad fractions and empty splits") {
+	IndexEncodingDataset base(10);
+	CHECK_THROWS_AS(random_split(base, {0.5, 0.3}, 0), std::invalid_argument);
+	CHECK_THROWS_AS(random_split(base, {1.5, -0.5}, 0), std::invalid_argument);
+	CHECK_THROWS_AS(random_split(base, {}, 0), std::invalid_argument);
+	CHECK_THROWS_AS(random_split(IndexEncodingDataset(3), {0.9, 0.05, 0.05}, 0), std::invalid_argument);
+}
+
+TEST_CASE("drop_last yields only full batches") {
+	IndexEncodingDataset base(5);
+	DataLoader keep(base, 2, false, false);
+	DataLoader drop(base, 2, false, true);
+	CHECK(keep.num_batches() == 3);
+	CHECK(drop.num_batches() == 2);
+	CHECK(drop.get_batch(1).first.data().shape()[0] == 2);
+	CHECK_THROWS_AS(drop.get_batch(2), TensorIndexError);
+}
+
+namespace {
+
+Tensor ramp(std::vector<size_t> shape) {
+	size_t n = 1;
+	for (size_t d : shape) n *= d;
+	std::vector<float> v(n);
+	for (size_t i = 0; i < n; i++) v[i] = static_cast<float>(i + 1);
+	return Tensor(shape, v);
+}
+
+}  // namespace
+
+TEST_CASE("Normalize subtracts the mean and divides by std") {
+	Normalize norm(2.0f, 4.0f);
+	CHECK(norm(Tensor({3}, std::vector<float>{2, 6, -2})).data() == std::vector<float>{0, 1, -1});
+	CHECK_THROWS_AS(Normalize(0.0f, 0.0f), std::invalid_argument);
+	CHECK_THROWS_AS(Normalize(0.0f, -1.0f), std::invalid_argument);
+}
+
+TEST_CASE("RandomHorizontalFlip mirrors columns at p=1, is identity at p=0 and replays under a seed") {
+	Tensor x = ramp({1, 2, 3});
+	CHECK(RandomHorizontalFlip(1.0f)(x).data() == std::vector<float>{3, 2, 1, 6, 5, 4});
+	CHECK(RandomHorizontalFlip(0.0f)(x).data() == x.data());
+	auto decisions = [&](uint64_t seed) {
+		manual_seed(seed);
+		RandomHorizontalFlip flip(0.5f);
+		std::vector<bool> d;
+		for (int i = 0; i < 32; i++) d.push_back(flip(x).data() != x.data());
+		return d;
+	};
+	CHECK(decisions(3) == decisions(3));
+	CHECK(decisions(3) != decisions(4));
+	auto d = decisions(3);
+	CHECK(std::count(d.begin(), d.end(), true) > 0);
+	CHECK(std::count(d.begin(), d.end(), false) > 0);
+	CHECK_THROWS_AS(RandomHorizontalFlip(1.5f), std::invalid_argument);
+}
+
+TEST_CASE("RandomHorizontalFlip returns a zero-width sample unchanged") {
+	Tensor empty({2, 0});
+	Tensor out = RandomHorizontalFlip(1.0f)(empty);
+	CHECK(out.shape() == empty.shape());
+	CHECK(out.size() == 0);
+}
+
+TEST_CASE("Compose rejects a null step") {
+	std::vector<std::unique_ptr<Transform>> steps;
+	steps.push_back(std::make_unique<Normalize>(0.0f, 1.0f));
+	steps.push_back(nullptr);
+	CHECK_THROWS_AS(Compose(std::move(steps)), std::invalid_argument);
+}
+
+TEST_CASE("RandomShift translates with zero fill and keeps the shape") {
+	Tensor x = ramp({2, 4, 5});
+	CHECK(RandomShift(0)(x).data() == x.data());
+	manual_seed(9);
+	RandomShift shift(2);
+	bool moved = false;
+	for (int i = 0; i < 20; i++) {
+		Tensor y = shift(x);
+		CHECK(y.shape() == x.shape());
+		// recover the shift from the first channel's content and rebuild the expected tensor
+		bool matched = false;
+		for (long dy = -2; dy <= 2 && !matched; dy++) {
+			for (long dx = -2; dx <= 2 && !matched; dx++) {
+				Tensor e(x.shape(), 0.0f);
+				for (long c = 0; c < 2; c++)
+					for (long r = 0; r < 4; r++)
+						for (long q = 0; q < 5; q++) {
+							long sr = r - dy, sq = q - dx;
+							if (sr >= 0 && sr < 4 && sq >= 0 && sq < 5) e.data()[(c * 4 + r) * 5 + q] = x.data()[(c * 4 + sr) * 5 + sq];
+						}
+				if (e.data() == y.data()) {
+					matched = true;
+					if (dy != 0 || dx != 0) moved = true;
+				}
+			}
+		}
+		CHECK(matched);
+	}
+	CHECK(moved);
+	CHECK_THROWS_AS(shift(Tensor({4, 5}, 0.0f)), TensorShapeError);
+}
+
+TEST_CASE("Compose applies transforms in order") {
+	std::vector<std::unique_ptr<Transform>> steps;
+	steps.push_back(std::make_unique<Normalize>(1.0f, 1.0f));
+	steps.push_back(std::make_unique<Normalize>(0.0f, 2.0f));
+	Compose c(std::move(steps));
+	CHECK(c(Tensor({1}, 5.0f)).data()[0] == doctest::Approx(2.0f));
+	std::vector<std::unique_ptr<Transform>> order;
+	order.push_back(std::make_unique<RandomHorizontalFlip>(1.0f));
+	order.push_back(std::make_unique<Normalize>(1.0f, 1.0f));
+	CHECK(Compose(std::move(order))(Tensor({2}, std::vector<float>{1, 3})).data() == std::vector<float>{2, 0});
+}
+
+TEST_CASE("compute_mean_std matches the population statistics") {
+	TensorDataset ds(Tensor({2, 2}, std::vector<float>{1, 2, 3, 6}), Tensor({2}, 0.0f));
+	auto [mean, sd] = compute_mean_std(ds);
+	CHECK(mean == doctest::Approx(3.0f));
+	CHECK(sd == doctest::Approx(std::sqrt(3.5f)));  // squared deviations 4,1,0,9 over 4 elements -> 3.5
+	CHECK_THROWS_AS(compute_mean_std(IndexEncodingDataset(0)), std::invalid_argument);
+}
+
+TEST_CASE("TransformedDataset transforms inputs only") {
+	TensorDataset ds(Tensor({2, 1}, std::vector<float>{4, 8}), Tensor({2}, std::vector<float>{7, 9}));
+	TransformedDataset t(ds, std::make_shared<Normalize>(4.0f, 2.0f));
+	auto [x, y] = t.get(1);
+	CHECK(t.size() == 2);
+	CHECK(x.data()[0] == doctest::Approx(2.0f));
+	CHECK(y.data()[0] == 9.0f);
+	CHECK_THROWS_AS(TransformedDataset(ds, nullptr), std::invalid_argument);
+}
+
+TEST_CASE("a transform's stream is unaffected by creating another transform") {
+	Tensor x = ramp({1, 2, 3});
+	auto run = [&](bool extra) {
+		manual_seed(21);
+		RandomHorizontalFlip flip(0.5f);
+		std::unique_ptr<RandomShift> other;
+		if (extra) other = std::make_unique<RandomShift>(2);
+		std::vector<bool> d;
+		for (int i = 0; i < 32; i++) {
+			if (other) (*other)(Tensor({1, 4, 4}, 0.0f));
+			d.push_back(flip(x).data() != x.data());
+		}
+		return d;
+	};
+	CHECK(run(false) == run(true));
+}
+
+namespace {
+
+// Writes text to a fresh file in the system temp directory and removes it on destruction
+struct TempFile {
+	std::filesystem::path path;
+	explicit TempFile(const std::string& name, const std::string& text) {
+		path = std::filesystem::temp_directory_path() / ("nn_cpp_test_" + name);
+		std::ofstream(path, std::ios::binary) << text;
+	}
+	~TempFile() { std::error_code ec; std::filesystem::remove(path, ec); }
+};
+
+// size x size image whose pixels all equal v
+std::string pixels_of(int v, int size = 2) {
+	std::string s;
+	for (int i = 0; i < size * size; i++) s += (i ? " " : "") + std::to_string(v);
+	return s;
+}
+
+std::string fer_text(const std::string& eol, bool quote_pixels) {
+	auto q = [&](const std::string& p) { return quote_pixels ? "\"" + p + "\"" : p; };
+	return "emotion,pixels,Usage" + eol +
+		   "0," + q(pixels_of(0)) + ",Training" + eol +
+		   "3," + q(pixels_of(255)) + ",PublicTest" + eol +
+		   "3," + q(pixels_of(51)) + ",Training" + eol +
+		   "6," + q(pixels_of(255)) + ",PrivateTest" + eol +
+		   "1," + q(pixels_of(102)) + ",Other" + eol + eol;
+}
+
+}  // namespace
+
+TEST_CASE("Fer2013Dataset parses LF, CRLF and quoted variants with a trailing blank line") {
+	for (auto [eol, quoted] : {std::pair<std::string, bool>{"\n", false}, {"\r\n", false}, {"\n", true}, {"\r\n", true}}) {
+		TempFile f("fer_ok.csv", fer_text(eol, quoted));
+		Fer2013Dataset all(f.path.string(), "", 2);
+		CHECK(all.size() == 5);
+		auto [x, y] = all.get(2);
+		CHECK(x.shape() == std::vector<size_t>{1, 2, 2});
+		CHECK(x.data()[0] == doctest::Approx(51.0f / 255.0f));
+		CHECK(y.shape().empty());
+		CHECK(y.data()[0] == 3.0f);
+		CHECK(all.get(1).first.data()[3] == doctest::Approx(1.0f));
+		CHECK(all.class_counts() == std::vector<size_t>{1, 1, 0, 2, 0, 0, 1});
+
+		Fer2013Dataset train(f.path.string(), "Training", 2);
+		CHECK(train.size() == 2);
+		CHECK(train.class_counts() == std::vector<size_t>{1, 0, 0, 1, 0, 0, 0});
+		CHECK(Fer2013Dataset(f.path.string(), "PublicTest", 2).size() == 1);
+		CHECK(Fer2013Dataset(f.path.string(), "Nothing", 2).size() == 0);
+		CHECK_THROWS_AS(all.get(5), TensorIndexError);
+	}
+}
+
+TEST_CASE("Fer2013Dataset locates columns by header name") {
+	TempFile f("fer_cols.csv", "Usage,pixels,emotion\nTraining,1 2 3 4,5\n");
+	Fer2013Dataset ds(f.path.string(), "Training", 2);
+	CHECK(ds.get(0).second.data()[0] == 5.0f);
+}
+
+TEST_CASE("Fer2013Dataset errors carry the line number and reason") {
+	auto message = [](const std::string& body) {
+		TempFile f("fer_bad.csv", "emotion,pixels,Usage\n" + body);
+		try {
+			Fer2013Dataset(f.path.string(), "", 2);
+		} catch (const std::runtime_error& e) {
+			return std::string(e.what());
+		}
+		return std::string("no error");
+	};
+	auto has = [](const std::string& m, const std::string& part) { return m.find(part) != std::string::npos; };
+	std::string ok = "0," + pixels_of(1) + ",Training\n";
+	std::string m = message(ok + ok + "0,1 2 3,Training\n");
+	CHECK(has(m, "line 4"));
+	CHECK(has(m, "expected 4 pixels, found 3"));
+	m = message(ok + "0,1 2 3 256,Training\n");
+	CHECK(has(m, "line 3"));
+	CHECK(has(m, "[0, 255]"));
+	CHECK(has(message("7," + pixels_of(1) + ",Training\n"), "emotion"));
+	CHECK(has(message("x," + pixels_of(1) + ",Training\n"), "line 2"));
+	CHECK(has(message("0\n"), "fields"));
+	CHECK(has(message("0,\"1 2 3 4,Training\n"), "unterminated"));
+
+	CHECK_THROWS_AS(Fer2013Dataset((std::filesystem::temp_directory_path() / "nn_cpp_no_such.csv").string()), std::runtime_error);
+	TempFile no_cols("fer_nocols.csv", "a,b\n1,2\n");
+	CHECK_THROWS_AS(Fer2013Dataset(no_cols.path.string()), std::runtime_error);
+	TempFile empty("fer_empty.csv", "");
+	CHECK_THROWS_AS(Fer2013Dataset(empty.path.string()), std::runtime_error);
 }

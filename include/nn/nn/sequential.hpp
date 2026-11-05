@@ -53,6 +53,24 @@ public:
 	 */
 	std::vector<std::pair<std::string, Value>> named_parameters() const override;
 
+	/* Public, list the buffers of every child, prefixed with the child index like
+	 * named_parameters
+	 *
+	 * Parameters: none
+	 *
+	 * Returns vector<pair<string, Tensor*>>: (name, pointer) pairs
+	 */
+	std::vector<std::pair<std::string, Tensor*>> named_buffers() const override;
+
+	/* Public, set the mode on every child, then on this container
+	 *
+	 * Parameters:
+	 * bool mode: true for training, false for evaluation
+	 *
+	 * Returns void: none
+	 */
+	void train(bool mode = true) override;
+
 private:
 	std::vector<std::unique_ptr<Module>> layers_;
 };

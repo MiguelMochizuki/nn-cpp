@@ -37,4 +37,21 @@ std::vector<std::pair<std::string, Value>> Sequential::named_parameters() const 
 	return all_params;
 }
 
+std::vector<std::pair<std::string, Tensor*>> Sequential::named_buffers() const {
+	std::vector<std::pair<std::string, Tensor*>> all;
+	for (size_t i = 0; i < layers_.size(); i++) {
+		for (auto& entry : layers_[i]->named_buffers()) {
+			all.emplace_back(std::to_string(i) + "." + entry.first, entry.second);
+		}
+	}
+	return all;
+}
+
+void Sequential::train(bool mode) {
+	for (auto& layer : layers_) {
+		layer->train(mode);
+	}
+	training_ = mode;
+}
+
 }  // namespace nn

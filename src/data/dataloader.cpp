@@ -5,6 +5,8 @@
  */
 
 #include "nn/data/dataloader.hpp"
+#include "nn/random.hpp"
+#include "shuffle.hpp"
 
 #include <algorithm>
 #include <numeric>
@@ -12,7 +14,10 @@
 namespace nn {
 
 DataLoader::DataLoader(const Dataset& dataset, size_t batch_size, bool shuffle)
-	: dataset_(dataset), batch_size_(batch_size), shuffle_(shuffle), rng_(std::random_device{}()) {
+	: DataLoader(dataset, batch_size, shuffle, false) {}
+
+DataLoader::DataLoader(const Dataset& dataset, size_t batch_size, bool shuffle, bool drop_last)
+	: dataset_(dataset), batch_size_(batch_size), shuffle_(shuffle), drop_last_(drop_last), rng_(derive_generator("dataloader")) {
 	if (batch_size_ == 0) {
 		throw TensorShapeError();
 	}
@@ -21,11 +26,13 @@ DataLoader::DataLoader(const Dataset& dataset, size_t batch_size, bool shuffle)
 	reset_epoch();
 }
 
-size_t DataLoader::num_batches() const { return (dataset_.size() + batch_size_ - 1) / batch_size_; }
+size_t DataLoader::num_batches() const {
+	return drop_last_ ? dataset_.size() / batch_size_ : (dataset_.size() + batch_size_ - 1) / batch_size_;
+}
 
 void DataLoader::reset_epoch() {
 	if (shuffle_) {
-		std::shuffle(indices_.begin(), indices_.end(), rng_);
+		portable_shuffle(indices_, rng_);
 	}
 }
 

@@ -1,0 +1,2 @@
+config,label,threads,benchmark,size,forward_ms,backward_ms,optim_ms,total_ms,gflops,spread,runs
+native,unpinned,12,cnn_fer,,422.253,269.228,0.073267,692.9,,0.0137484,15

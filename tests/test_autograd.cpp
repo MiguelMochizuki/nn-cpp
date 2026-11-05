@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -785,4 +786,369 @@ TEST_CASE("backward on a 4000 node chain does not overflow the stack") {
 		y.backward();
 	}
 	CHECK(x.grad().data()[0] == doctest::Approx(1.0f));
+}
+
+namespace {
+
+// Weighted so gradients differ per element and a wrong broadcast cannot cancel out
+Value weighted_loss(const Value& y) {
+	std::vector<float> w(y.data().size());
+	for (size_t i = 0; i < w.size(); i++) w[i] = 0.5f + 0.37f * static_cast<float>(i % 7);
+	return sum(mul(y, Value::leaf(Tensor(y.data().shape(), w))));
+}
+
+// Positive values in [1, 2) keep float cancellation small in finite differences
+Value spread_leaf(std::vector<size_t> shape) {
+	size_t n = 1;
+	for (size_t d : shape) n *= d;
+	std::vector<float> v(n);
+	for (size_t i = 0; i < n; i++) v[i] = 1.0f + 0.1f * static_cast<float>((i * 7) % 10);
+	return Value::leaf(Tensor(shape, v), true);
+}
+
+Value iota_leaf(std::vector<size_t> shape, bool grad = false) {
+	size_t n = 1;
+	for (size_t d : shape) n *= d;
+	std::vector<float> v(n);
+	for (size_t i = 0; i < n; i++) v[i] = static_cast<float>(i) + 1.0f;
+	return Value::leaf(Tensor(shape, v), grad);
+}
+
+}  // namespace
+
+TEST_CASE("axis sum and mean values on a {2,3,4} tensor") {
+	Value x = iota_leaf({2, 3, 4});
+	// axis 0: x[0,j,k] + x[1,j,k] = (1+13), ...
+	Value s0 = sum(x, 0);
+	CHECK(s0.data().shape() == std::vector<size_t>{3, 4});
+	CHECK(s0.data().get({0, 0}) == 14.0f);
+	CHECK(s0.data().get({2, 3}) == 12.0f + 24.0f);
+	// axis 1: 1+5+9, ...
+	Value s1 = sum(x, 1);
+	CHECK(s1.data().shape() == std::vector<size_t>{2, 4});
+	CHECK(s1.data().get({0, 0}) == 15.0f);
+	CHECK(s1.data().get({1, 3}) == 60.0f);
+	// axis 2 and -1 agree: 1+2+3+4 = 10
+	Value s2 = sum(x, 2);
+	Value sm1 = sum(x, -1);
+	CHECK(s2.data().shape() == std::vector<size_t>{2, 3});
+	CHECK(s2.data().get({0, 0}) == 10.0f);
+	CHECK(s2.data().data() == sm1.data().data());
+	Value m2 = mean(x, 2);
+	CHECK(m2.data().get({1, 2}) == doctest::Approx(22.5f));
+	// keepdim keeps a size-1 axis
+	CHECK(sum(x, 0, true).data().shape() == std::vector<size_t>{1, 3, 4});
+	CHECK(sum(x, 1, true).data().shape() == std::vector<size_t>{2, 1, 4});
+	CHECK(mean(x, -1, true).data().shape() == std::vector<size_t>{2, 3, 1});
+	CHECK(sum(x, -3).data().data() == s0.data().data());
+	CHECK_THROWS_AS(sum(x, 3), TensorIndexError);
+	CHECK_THROWS_AS(mean(x, -4), TensorIndexError);
+}
+
+TEST_CASE("axis reductions on 1-D tensors and size-1 axes") {
+	Value v = iota_leaf({5});
+	CHECK(sum(v, 0).data().shape() == std::vector<size_t>{1});
+	CHECK(sum(v, 0).data().get({0}) == 15.0f);
+	CHECK(mean(v, -1).data().get({0}) == doctest::Approx(3.0f));
+	CHECK(sum(v, 0, true).data().shape() == std::vector<size_t>{1});
+	Value one = iota_leaf({3, 1, 2});
+	Value s = sum(one, 1);
+	CHECK(s.data().shape() == std::vector<size_t>{3, 2});
+	CHECK(s.data().data() == std::vector<float>{1, 2, 3, 4, 5, 6});
+	CHECK(mean(one, 1, true).data().data() == one.data().data());
+}
+
+TEST_CASE("axis sum, axis mean and rsqrt gradchecks") {
+	for (std::vector<size_t> shape : {std::vector<size_t>{1}, {7, 3}, {33, 5}, {257, 2}}) {
+		for (int axis = 0; axis < static_cast<int>(shape.size()); axis++) {
+			for (bool keep : {false, true}) {
+				Value x = spread_leaf(shape);
+				CHECK(gradcheck([&](Value a) { return weighted_loss(sum(a, axis, keep)); }, x, 1e-2f, 5e-2f));
+				x = spread_leaf(shape);
+				CHECK(gradcheck([&](Value a) { return weighted_loss(mean(a, axis, keep)); }, x, 1e-2f, 5e-2f));
+			}
+		}
+		Value p = spread_leaf(shape);
+		CHECK(gradcheck([](Value a) { return weighted_loss(rsqrt(a)); }, p, 1e-2f, 5e-2f));
+	}
+	Value r = Value::leaf(Tensor({2}, std::vector<float>{4.0f, 0.25f}));
+	CHECK(rsqrt(r).data().data() == std::vector<float>{0.5f, 2.0f});
+}
+
+TEST_CASE("axis reductions are bitwise identical at 1 and 8 threads") {
+	std::vector<float> v(300 * 70 * 9);
+	for (size_t i = 0; i < v.size(); i++) v[i] = std::sin(0.37f * static_cast<float>(i));
+	auto run = [&](size_t threads) {
+		nn::kernels::set_num_threads(threads);
+		std::vector<float> out;
+		for (int axis : {0, 1, 2}) {
+			Value x = Value::leaf(Tensor({300, 70, 9}, v), true);
+			Value y = mean(x, axis);
+			weighted_loss(y).backward();
+			out.insert(out.end(), y.data().data().begin(), y.data().data().end());
+			out.insert(out.end(), x.grad().data().begin(), x.grad().data().end());
+		}
+		return out;
+	};
+	size_t saved = nn::kernels::num_threads();
+	std::vector<float> serial = run(1);
+	std::vector<float> parallel = run(8);
+	nn::kernels::set_num_threads(saved);
+	CHECK(serial == parallel);
+}
+
+TEST_CASE("backward orders a node after all its consumers when paths have different depths") {
+	// c feeds both mul(c, c) -> mean (a deeper path) and the final mul directly
+	auto f = [](Value x) {
+		Value c = mul(x, x);
+		return sum(mul(c, mean(mul(c, c), 0, true)));
+	};
+	Value x = Value::leaf(Tensor({7, 3}, std::vector<float>{0.3f, -0.8f, 0.5f, 0.9f, -0.2f, 0.7f, -0.6f, 0.1f, 0.4f, -0.9f, 0.8f,
+	                                                       -0.3f, 0.2f, -0.5f, 0.6f, 0.7f, -0.1f, -0.4f, 0.35f, 0.45f, -0.75f}),
+	                       true);
+	CHECK(gradcheck(f, x, 1e-3f, 5e-2f));
+}
+
+TEST_CASE("avgpool2d averages each window, with and without overlap") {
+	Value x = Value::leaf(Tensor({1, 1, 4, 4}, std::vector<float>{
+	                           1, 2, 5, 6,
+	                           3, 4, 7, 8,
+	                           9, 10, 13, 14,
+	                           11, 12, 15, 16}),
+	                       true);
+	Value y = avgpool2d(x, 2, 2);
+	CHECK(y.data().shape() == std::vector<size_t>{1, 1, 2, 2});
+	CHECK(y.data().data() == std::vector<float>{2.5f, 6.5f, 10.5f, 14.5f});
+	Value o = avgpool2d(x, 2, 1);
+	CHECK(o.data().shape() == std::vector<size_t>{1, 1, 3, 3});
+	CHECK(o.data().data() == std::vector<float>{2.5f, 4.5f, 6.5f, 6.5f, 8.5f, 10.5f, 10.5f, 12.5f, 14.5f});
+	sum(o).backward();
+	// corners belong to one window, centre to four: g/4 accumulated
+	CHECK(x.grad().get({0, 0, 0, 0}) == doctest::Approx(0.25f));
+	CHECK(x.grad().get({0, 0, 1, 1}) == doctest::Approx(1.0f));
+	CHECK(x.grad().get({0, 0, 0, 1}) == doctest::Approx(0.5f));
+}
+
+TEST_CASE("avgpool2d gradcheck at several shapes") {
+	for (auto shape : {std::vector<size_t>{1, 1, 2, 2}, std::vector<size_t>{2, 3, 7, 7}, std::vector<size_t>{1, 2, 33, 33}}) {
+		size_t k = shape[2] == 2 ? 2 : 3;
+		size_t s = shape[2] == 7 ? 2 : 1;
+		Tensor w = patterned(avgpool2d(Value::leaf(Tensor(shape, 0.0f)), k, s).data().shape(), 0.77f);
+		auto f = [&](Value x) { return sum(mul(avgpool2d(x, k, s), Value::leaf(w))); };
+		CHECK(gradcheck(f, Value::leaf(patterned(shape, 0.31f), true)));
+	}
+}
+
+TEST_CASE("avgpool2d gradcheck with 257 batch entries and 257 channels") {
+	for (auto shape : {std::vector<size_t>{257, 1, 4, 4}, std::vector<size_t>{1, 257, 4, 4}}) {
+		Tensor w = patterned(avgpool2d(Value::leaf(Tensor(shape, 0.0f)), 2, 2).data().shape(), 0.77f);
+		auto f = [&](Value x) { return sum(mul(avgpool2d(x, 2, 2), Value::leaf(w))); };
+		CHECK(gradcheck(f, Value::leaf(patterned(shape, 0.31f), true)));
+	}
+}
+
+TEST_CASE("avgpool2d rejects a kernel larger than the input and bad arguments") {
+	Value x = Value::leaf(Tensor({1, 1, 3, 3}, 1.0f));
+	CHECK_THROWS_AS(avgpool2d(x, 4, 1), TensorShapeError);
+	CHECK_THROWS_AS(avgpool2d(x, 0, 1), TensorShapeError);
+	CHECK_THROWS_AS(avgpool2d(x, 2, 0), TensorShapeError);
+	CHECK_THROWS_AS(avgpool2d(Value::leaf(Tensor({3, 3}, 1.0f)), 2, 1), TensorShapeError);
+}
+
+TEST_CASE("avgpool2d forward and backward are bitwise identical for any thread count") {
+	size_t saved = nn::kernels::num_threads();
+	for (size_t k : {size_t{1}, size_t{2}, size_t{3}}) {
+		for (size_t stride : {size_t{1}, size_t{2}}) {
+			Tensor xv = patterned({7, 3, 12, 9}, 0.31f);
+			std::vector<float> out1, g1;
+			for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+				nn::kernels::set_num_threads(threads);
+				Value x = Value::leaf(xv, true);
+				Value y = avgpool2d(x, k, stride);
+				sum(y).backward();
+				if (threads == 1) {
+					out1 = y.data().data();
+					g1 = x.grad().data();
+				} else {
+					CHECK(y.data().data() == out1);
+					CHECK(x.grad().data() == g1);
+				}
+			}
+		}
+	}
+	nn::kernels::set_num_threads(saved);
+}
+
+namespace {
+// Direct grouped, dilated convolution (rectangular kernels allowed), the reference for the general path
+Tensor reference_conv_general(const Tensor& x, const Tensor& w, const Tensor& b, size_t stride, size_t pad, size_t dil,
+	size_t groups) {
+	size_t N = x.shape()[0], Cin = x.shape()[1], H = x.shape()[2], W = x.shape()[3];
+	size_t Cout = w.shape()[0], Cg = w.shape()[1], kh = w.shape()[2], kw = w.shape()[3];
+	size_t Ho = (H + 2 * pad - dil * (kh - 1) - 1) / stride + 1, Wo = (W + 2 * pad - dil * (kw - 1) - 1) / stride + 1;
+	size_t Cog = Cout / groups;
+	(void)Cin;
+	Tensor out({N, Cout, Ho, Wo});
+	for (size_t n = 0; n < N; n++)
+		for (size_t co = 0; co < Cout; co++)
+			for (size_t oh = 0; oh < Ho; oh++)
+				for (size_t ow = 0; ow < Wo; ow++) {
+					float acc = b.data()[co];
+					size_t g = co / Cog;
+					for (size_t c = 0; c < Cg; c++)
+						for (size_t i = 0; i < kh; i++)
+							for (size_t j = 0; j < kw; j++) {
+								long ih = static_cast<long>(oh * stride + i * dil) - static_cast<long>(pad);
+								long iw = static_cast<long>(ow * stride + j * dil) - static_cast<long>(pad);
+								if (ih < 0 || iw < 0 || ih >= static_cast<long>(H) || iw >= static_cast<long>(W)) continue;
+								acc += x.get({n, g * Cg + c, static_cast<size_t>(ih), static_cast<size_t>(iw)}) *
+								       w.get({co, c, i, j});
+							}
+					out.at({n, co, oh, ow}) = acc;
+				}
+	return out;
+}
+}  // namespace
+
+TEST_CASE("conv2d with dilation 1 and groups 1 is bitwise identical to the 5-argument overload") {
+	Tensor xv = patterned({3, 2, 9, 7}, 0.07f), wv = patterned({4, 2, 3, 3}, 0.05f), bv = patterned({4}, 0.1f);
+	Value y5 = conv2d(Value::leaf(xv, false), Value::leaf(wv, false), Value::leaf(bv, false), 2, 1);
+	Value y7 = conv2d(Value::leaf(xv, false), Value::leaf(wv, false), Value::leaf(bv, false), 2, 1, 1, 1);
+	REQUIRE(y5.data().shape() == y7.data().shape());
+	for (size_t i = 0; i < y5.data().size(); i++) CHECK(y5.data().data()[i] == y7.data().data()[i]);
+}
+
+TEST_CASE("conv2d general path matches a direct reference and is independent of the thread count") {
+	struct Cfg { size_t N, Cin, H, W, Cout, kh, kw, stride, pad, dil, groups; };
+	std::vector<Cfg> cfgs = {
+		{2, 4, 9, 9, 4, 3, 3, 1, 2, 2, 1},   // dilation 2
+		{2, 4, 9, 9, 6, 3, 3, 1, 1, 1, 2},   // groups 2
+		{2, 4, 9, 9, 4, 3, 3, 2, 1, 1, 4},   // depthwise
+		{2, 4, 9, 9, 8, 3, 3, 2, 2, 2, 2},   // everything at once
+		{3, 2, 6, 8, 2, 1, 3, 1, 1, 2, 2},   // rectangular, depthwise
+	};
+	size_t saved = nn::kernels::num_threads();
+	for (const Cfg& c : cfgs) {
+		Tensor xv = patterned({c.N, c.Cin, c.H, c.W}, 0.07f);
+		Tensor wv = patterned({c.Cout, c.Cin / c.groups, c.kh, c.kw}, 0.05f);
+		Tensor bv = patterned({c.Cout}, 0.1f);
+		Tensor expect = reference_conv_general(xv, wv, bv, c.stride, c.pad, c.dil, c.groups);
+		std::vector<float> gx1, gw1, gb1;
+		for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+			nn::kernels::set_num_threads(threads);
+			Value x = Value::leaf(xv, true), w = Value::leaf(wv, true), b = Value::leaf(bv, true);
+			Value y = conv2d(x, w, b, static_cast<int>(c.stride), static_cast<int>(c.pad), static_cast<int>(c.dil),
+				static_cast<int>(c.groups));
+			REQUIRE(y.data().shape() == expect.shape());
+			for (size_t i = 0; i < expect.size(); i++) CHECK(y.data().data()[i] == doctest::Approx(expect.data()[i]).epsilon(1e-4));
+			sum(y).backward();
+			if (threads == 1) {
+				gx1 = x.grad().data(); gw1 = w.grad().data(); gb1 = b.grad().data();
+			} else {
+				CHECK(x.grad().data() == gx1);
+				CHECK(w.grad().data() == gw1);
+				CHECK(b.grad().data() == gb1);
+			}
+		}
+	}
+	nn::kernels::set_num_threads(saved);
+}
+
+TEST_CASE("conv2d general path gradchecks input, weight and bias") {
+	struct Cfg { std::vector<size_t> x, w; int stride, pad, dil, groups; };
+	std::vector<Cfg> cfgs = {
+		{{1, 2, 3, 3}, {2, 2, 3, 3}, 1, 2, 2, 1},  // dilation 2, padding 2
+		{{2, 4, 7, 7}, {4, 2, 3, 3}, 1, 1, 1, 2},  // groups 2
+		{{1, 3, 5, 5}, {3, 1, 3, 3}, 1, 1, 1, 3},  // depthwise
+		{{1, 2, 5, 6}, {2, 2, 1, 3}, 1, 0, 1, 1},  // rectangular 1x3 (groups 1, dilation 1: delegated)
+		{{1, 2, 5, 6}, {2, 1, 1, 3}, 1, 1, 2, 2},  // rectangular, dilated, depthwise
+	};
+	for (const Cfg& c : cfgs) {
+		Tensor xv = Tensor::random(c.x, -1.0f, 1.0f), wv = Tensor::random(c.w, -0.5f, 0.5f);
+		Tensor bv = Tensor::random({c.w[0]}, -0.2f, 0.2f);
+		Value x = Value::leaf(xv, true), w = Value::leaf(wv, true), b = Value::leaf(bv, true);
+		auto op = [&](Value xi, Value wi, Value bi) { return conv2d(xi, wi, bi, c.stride, c.pad, c.dil, c.groups); };
+		CHECK(gradcheck([&](Value v) { return sum(op(v, w, b)); }, x, 1e-3f, 0.1f));
+		CHECK(gradcheck([&](Value v) { return sum(op(x, v, b)); }, w, 1e-3f, 0.1f));
+		CHECK(gradcheck([&](Value v) { return sum(op(x, w, v)); }, b, 1e-3f, 0.1f));
+	}
+}
+
+TEST_CASE("conv2d general path rejects bad arguments") {
+	Value x = Value::leaf(Tensor({1, 4, 5, 5}, 1.0f), false);
+	Value w = Value::leaf(Tensor({4, 2, 3, 3}, 1.0f), false);
+	Value b = Value::leaf(Tensor({4}, 0.0f), false);
+	CHECK_NOTHROW(conv2d(x, w, b, 1, 0, 1, 2));
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 1, 3), TensorShapeError);  // groups does not divide channels
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 1, 4), TensorShapeError);  // weight Cin/groups mismatch
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 0, 2), TensorShapeError);  // dilation 0
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 3, 2), TensorShapeError);  // effective kernel 7 > 5
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 1, 0), TensorShapeError);  // groups 0
+}
+
+TEST_CASE("weighted cross_entropy_loss with unit weights and no smoothing equals the unweighted loss") {
+	Tensor lv = Tensor::random({7, 4}, -2.0f, 2.0f);
+	Tensor targets({7}, std::vector<float>{0, 1, 2, 3, 3, 1, 0});
+	Value a = Value::leaf(lv, true), b = Value::leaf(lv, true);
+	Value la = cross_entropy_loss(a, targets), lb = cross_entropy_loss(b, targets, Tensor({4}, 1.0f));
+	CHECK(lb.data().data()[0] == doctest::Approx(la.data().data()[0]).epsilon(1e-6));
+	la.backward(); lb.backward();
+	for (size_t i = 0; i < lv.size(); i++) CHECK(b.grad().data()[i] == doctest::Approx(a.grad().data()[i]).epsilon(1e-5));
+}
+
+TEST_CASE("weighted cross_entropy_loss matches a hand-computed value") {
+	// Uniform logits: every -log p is log 3, so the weighted mean is log 3 whatever the weights
+	Value logits = Value::leaf(Tensor({3, 3}, 0.0f), false);
+	Tensor targets({3}, std::vector<float>{0, 1, 2});
+	Tensor w({3}, std::vector<float>{1.0f, 2.0f, 0.5f});
+	CHECK(cross_entropy_loss(logits, targets, w).data().data()[0] == doctest::Approx(std::log(3.0f)));
+	// Non-uniform: sample losses l = {log(1+e^-1)+..., } computed directly
+	Value lg = Value::leaf(Tensor({3, 3}, std::vector<float>{1, 0, 0, 0, 2, 0, 0, 0, 3}), false);
+	float l0 = std::log(std::exp(1.0f) + 2.0f) - 1.0f;
+	float l1 = std::log(std::exp(2.0f) + 2.0f) - 2.0f;
+	float l2 = std::log(std::exp(3.0f) + 2.0f) - 3.0f;
+	float expect = (1.0f * l0 + 2.0f * l1 + 0.5f * l2) / 3.5f;
+	CHECK(cross_entropy_loss(lg, targets, w).data().data()[0] == doctest::Approx(expect).epsilon(1e-5));
+}
+
+TEST_CASE("cross_entropy_loss label smoothing on a two-class example") {
+	Value logits = Value::leaf(Tensor({1, 2}, std::vector<float>{2.0f, 0.0f}), false);
+	Tensor targets({1}, std::vector<float>{0});
+	float lse = std::log(std::exp(2.0f) + 1.0f);
+	float nll0 = lse - 2.0f, nll1 = lse;
+	float s = 0.2f;
+	float expect = (1.0f - s) * nll0 + s * 0.5f * (nll0 + nll1);
+	CHECK(cross_entropy_loss(logits, targets, Tensor({2}, 1.0f), s).data().data()[0] == doctest::Approx(expect).epsilon(1e-5));
+}
+
+TEST_CASE("weighted smoothed cross_entropy_loss gradcheck") {
+	for (size_t N : {size_t{1}, size_t{7}, size_t{33}}) {
+		Tensor targets({N});
+		for (size_t i = 0; i < N; i++) targets.data()[i] = static_cast<float>((i * 5) % 4);
+		Tensor w({4}, std::vector<float>{1.0f, 2.0f, 0.5f, 1.5f});
+		auto f = [targets, w](Value l) { return cross_entropy_loss(l, targets, w, 0.1f); };
+		Value x = Value::leaf(Tensor::random({N, 4}, -2.0f, 2.0f), true);
+		CHECK(gradcheck(f, x, 1e-3f, 0.05f));
+	}
+}
+
+TEST_CASE("weighted cross_entropy_loss rejects bad input") {
+	Value logits = Value::leaf(Tensor({2, 3}, 0.0f), false);
+	Tensor targets({2}, std::vector<float>{0, 1});
+	Tensor w({3}, 1.0f);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({2}, 1.0f)), TensorShapeError);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, w, 1.0f), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, w, -0.1f), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, Tensor({2}, std::vector<float>{0, 3}), w), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{1, -1, 1})), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{1, std::nanf(""), 1})), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{1, INFINITY, 1})), std::invalid_argument);
+	// Both samples belong to zero-weight classes
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{0, 0, 1})), std::invalid_argument);
+}
+
+TEST_CASE("axis reductions over a zero-length axis throw") {
+	Value x = Value::leaf(Tensor({0, 3}, 0.0f), false);
+	CHECK_THROWS_AS(mean(x, 0), TensorShapeError);
+	CHECK_THROWS_AS(sum(x, 0), TensorShapeError);
 }

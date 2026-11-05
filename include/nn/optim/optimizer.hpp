@@ -45,6 +45,23 @@ public:
 	 */
 	virtual void step() = 0;
 
+	/* Public, read the current learning rate
+	 *
+	 * Parameters: none
+	 *
+	 * Returns float: the learning rate; the base class throws std::logic_error
+	 */
+	virtual float lr() const;
+
+	/* Public, change the learning rate used by the next step()
+	 *
+	 * Parameters:
+	 * float lr: new learning rate
+	 *
+	 * Returns void: none; the base class throws std::logic_error
+	 */
+	virtual void set_lr(float lr);
+
 	/* Public, reset every tracked parameter's grad to zero
 	 *
 	 * Parameters: none
@@ -75,6 +92,8 @@ public:
 protected:
 	/* Protected, throw std::runtime_error unless got has exactly the names and shapes of expected */
 	static void check_state(const OptimizerState& got, const OptimizerState& expected);
+	/* Protected, copy of snapshot with an "lr" entry (of current_lr) appended when it has none, so v1.0.0 snapshots load */
+	static OptimizerState with_lr(const OptimizerState& snapshot, float current_lr);
 
 	std::vector<Value> params_;
 };

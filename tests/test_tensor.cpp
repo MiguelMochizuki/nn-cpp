@@ -183,6 +183,14 @@ TEST_CASE("add broadcasts a smaller trailing dimension") {
 	CHECK(c.get({1, 2}) == 36.0f);
 }
 
+TEST_CASE("broadcasting keeps zero-size dimensions") {
+	CHECK(add(Tensor({0, 3}, 1.0f), Tensor({1, 3}, 2.0f)).shape() == std::vector<size_t>{0, 3});
+	CHECK(add(Tensor({1, 3}, 2.0f), Tensor({0, 3}, 1.0f)).shape() == std::vector<size_t>{0, 3});
+	CHECK(add(Tensor({0}, 1.0f), Tensor({1}, 2.0f)).shape() == std::vector<size_t>{0});
+	CHECK(mul(Tensor({2, 0}, 1.0f), Tensor({2, 1}, 2.0f)).shape() == std::vector<size_t>{2, 0});
+	CHECK_THROWS_AS(add(Tensor({0, 3}, 1.0f), Tensor({2, 3}, 2.0f)), TensorShapeError);
+}
+
 namespace {
 // Reference broadcast: walks every output index and reads each operand through its own dimensions
 Tensor reference_broadcast(const Tensor& a, const Tensor& b, float (*op)(float, float), const std::vector<size_t>& out_shape) {
@@ -235,6 +243,96 @@ TEST_CASE("elementwise broadcast fast paths match the index-by-index reference")
 			CHECK(sub(b, a).data() == reference_broadcast(b, a, +[](float x, float y) { return x - y; }, out_shape).data());
 		}
 	}
+}
+
+namespace {
+using ShapePair = std::pair<std::vector<size_t>, std::vector<size_t>>;
+
+// Fills a tensor with reproducible, non-zero values of mixed sign and magnitude
+void fill_random(Tensor& t, unsigned seed) {
+	unsigned s = seed * 2654435761u + 12345u;
+	for (size_t i = 0; i < t.size(); i++) {
+		s = s * 1664525u + 1013904223u;
+		float v = (static_cast<float>(s >> 8) / 16777216.0f - 0.5f) * 20.0f;
+		t.data()[i] = v == 0.0f ? 0.5f : v;
+	}
+}
+
+// Checks add, sub, mul and div of a and b (both orders) bitwise against the reference
+void check_against_reference(const Tensor& a, const Tensor& b) {
+	std::vector<size_t> out_shape(std::max(a.ndim(), b.ndim()), 1);
+	for (const Tensor* t : {&a, &b}) {
+		for (size_t d = 0; d < t->ndim(); d++) {
+			size_t& o = out_shape[d + out_shape.size() - t->ndim()];
+			o = std::max(o, t->shape()[d]);
+		}
+	}
+	using Fn = Tensor (*)(const Tensor&, const Tensor&);
+	using Ref = float (*)(float, float);
+	Fn fns[] = {add, sub, mul, div};
+	Ref refs[] = {+[](float x, float y) { return x + y; }, +[](float x, float y) { return x - y; },
+	              +[](float x, float y) { return x * y; }, +[](float x, float y) { return x / y; }};
+	for (int k = 0; k < 4; k++) {
+		Tensor ab = fns[k](a, b), ba = fns[k](b, a);
+		CHECK(ab.shape() == out_shape);
+		CHECK(ba.shape() == out_shape);
+		CHECK(ab.data() == reference_broadcast(a, b, refs[k], out_shape).data());
+		CHECK(ba.data() == reference_broadcast(b, a, refs[k], out_shape).data());
+	}
+}
+}  // namespace
+
+TEST_CASE("elementwise broadcast is bitwise equal to the reference for many shape pairs") {
+	unsigned seed = 1;
+	for (size_t n : {size_t{1}, size_t{7}, size_t{33}, size_t{257}}) {
+		size_t c = n > 33 ? 5 : n, h = n > 33 ? 9 : 3;
+		std::vector<ShapePair> cases = {
+			{{2, c, h, n}, {1, c, 1, 1}},   // BatchNorm statistics
+			{{2, c, h, n}, {c, 1, 1}},      // rank mismatch, channel
+			{{2, c, h, n}, {1, 1, h, n}},   // trailing block with leading ones
+			{{2, c, h, n}, {2, 1, 1, 1}},   // per-sample
+			{{2, c, h, n}, {1}},            // scalar
+			{{2, c, h, n}, {}},             // rank-0
+			{{2, c, h, n}, {2, c, h, n}},   // same shape
+			{{2, c, h, n}, {n}},            // trailing 1-D
+			{{2, c, h, n}, {2, 1, h, 1}},   // interleaved broadcast dims
+			{{2, c, h, n}, {1, c, h, 1}},
+			{{c, 1, n}, {1, h, 1}},         // both expand
+			{{c, 1}, {1, n}},               // outer product
+			{{n, 1, 1}, {1, c, h}},
+			{{1, 1, 1}, {c, h, n}},         // size-1 dims everywhere
+			{{1, 1, 1, 1}, {1, 1, 1, 1}},
+			{{n}, {n}},                     // 1-D
+			{{n}, {1}},
+			{{1}, {1}},
+			{{3, 1, 5, 1, n}, {1, c, 1, h, 1}},
+		};
+		for (const auto& cs : cases) {
+			Tensor a(cs.first), b(cs.second);
+			fill_random(a, seed++);
+			fill_random(b, seed++);
+			check_against_reference(a, b);
+		}
+	}
+}
+
+TEST_CASE("elementwise broadcast over a large tensor is identical for any thread count") {
+	Tensor a({8, 16, 48, 48}), b({1, 16, 1, 1}), c({16, 1, 1}), d({1, 1, 48, 48});
+	fill_random(a, 11);
+	fill_random(b, 12);
+	fill_random(c, 13);
+	fill_random(d, 14);
+	size_t saved = nn::kernels::num_threads();
+	nn::kernels::set_num_threads(1);
+	Tensor r1[] = {add(a, b), sub(c, a), mul(a, b), div(a, d), mul(b, c)};
+	for (size_t threads : {size_t{3}, size_t{8}}) {
+		nn::kernels::set_num_threads(threads);
+		Tensor r[] = {add(a, b), sub(c, a), mul(a, b), div(a, d), mul(b, c)};
+		for (int k = 0; k < 5; k++) CHECK(r[k].data() == r1[k].data());
+	}
+	nn::kernels::set_num_threads(saved);
+	CHECK(r1[0].data() == reference_broadcast(a, b, +[](float x, float y) { return x + y; }, a.shape()).data());
+	CHECK(r1[3].data() == reference_broadcast(a, d, +[](float x, float y) { return x / y; }, a.shape()).data());
 }
 
 TEST_CASE("add with incompatible shapes throws") {

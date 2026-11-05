@@ -39,6 +39,8 @@ public:
 	 * Returns void: none
 	 */
 	void step() override;
+	float lr() const override { return lr_; }
+	void set_lr(float lr) override { lr_ = lr; }
 	/* Public, snapshot the momentum buffers for checkpointing
 	 *
 	 * Parameters: none
@@ -49,11 +51,11 @@ public:
 	/* Public, restore a snapshot produced by state(); all-or-nothing
 	 *
 	 * Parameters:
-	 * OptimizerState state: snapshot to restore
+	 * OptimizerState snapshot: snapshot to restore
 	 *
-	 * Returns void: none; throws std::runtime_error and leaves this optimizer unchanged on a name or shape mismatch
+	 * Returns void: none; a snapshot without "lr" keeps the current lr; throws std::runtime_error and leaves this optimizer unchanged on a name or shape mismatch
 	 */
-	void load_state(const OptimizerState& state) override;
+	void load_state(const OptimizerState& snapshot) override;
 
 private:
 	float lr_;

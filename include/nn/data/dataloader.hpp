@@ -22,6 +22,7 @@ namespace nn {
  * const Dataset& dataset_: source data, not owned
  * size_t batch_size_: samples per batch
  * bool shuffle_: whether to reshuffle sample order each epoch
+ * bool drop_last_: whether a final batch smaller than batch_size_ is skipped
  * vector<size_t> indices_: current sample order
  * mt19937 rng_: random engine used when shuffle_ is true
  */
@@ -38,12 +39,24 @@ public:
 	 */
 	DataLoader(const Dataset& dataset, size_t batch_size, bool shuffle);
 
+	/* Public, construct a batching loader that can skip the short final batch
+	 *
+	 * Parameters:
+	 * const Dataset& dataset: data to iterate; must outlive this DataLoader
+	 * size_t batch_size: samples per batch
+	 * bool shuffle: reshuffle order at the start of each epoch
+	 * bool drop_last: skip the final batch if it has fewer than batch_size samples
+	 *
+	 * Returns DataLoader: none (constructor)
+	 */
+	DataLoader(const Dataset& dataset, size_t batch_size, bool shuffle, bool drop_last);
+
 	/* Public, number of batches per epoch, including a shorter final batch if the
 	 * dataset size isn't a multiple of batch_size
 	 *
 	 * Parameters: none
 	 *
-	 * Returns size_t: ceil(dataset.size() / batch_size)
+	 * Returns size_t: ceil(dataset.size() / batch_size), or the floor when drop_last is set
 	 */
 	size_t num_batches() const;
 
@@ -70,6 +83,7 @@ private:
 	const Dataset& dataset_;
 	size_t batch_size_;
 	bool shuffle_;
+	bool drop_last_;
 	std::vector<size_t> indices_;
 	std::mt19937 rng_;
 };

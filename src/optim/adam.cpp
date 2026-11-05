@@ -49,7 +49,8 @@ OptimizerState Adam::state() const {
 	return out;
 }
 
-void Adam::load_state(const OptimizerState& state) {
+void Adam::load_state(const OptimizerState& snapshot) {
+	const OptimizerState state = with_lr(snapshot, lr_);
 	check_state(state, this->state());
 	for (const auto& entry : state) {
 		const std::string& name = entry.first;
