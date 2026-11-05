@@ -741,3 +741,112 @@ TEST_CASE("has_grad is false for a non-leaf before backward and true afterwards"
 	CHECK(h.has_grad());
 	CHECK(x.has_grad());
 }
+
+namespace {
+
+// Weighted so gradients differ per element and a wrong broadcast cannot cancel out
+Value weighted_loss(const Value& y) {
+	std::vector<float> w(y.data().size());
+	for (size_t i = 0; i < w.size(); i++) w[i] = 0.5f + 0.37f * static_cast<float>(i % 7);
+	return sum(mul(y, Value::leaf(Tensor(y.data().shape(), w))));
+}
+
+// Positive values in [1, 2) keep float cancellation small in finite differences
+Value spread_leaf(std::vector<size_t> shape) {
+	size_t n = 1;
+	for (size_t d : shape) n *= d;
+	std::vector<float> v(n);
+	for (size_t i = 0; i < n; i++) v[i] = 1.0f + 0.1f * static_cast<float>((i * 7) % 10);
+	return Value::leaf(Tensor(shape, v), true);
+}
+
+Value iota_leaf(std::vector<size_t> shape, bool grad = false) {
+	size_t n = 1;
+	for (size_t d : shape) n *= d;
+	std::vector<float> v(n);
+	for (size_t i = 0; i < n; i++) v[i] = static_cast<float>(i) + 1.0f;
+	return Value::leaf(Tensor(shape, v), grad);
+}
+
+}  // namespace
+
+TEST_CASE("axis sum and mean values on a {2,3,4} tensor") {
+	Value x = iota_leaf({2, 3, 4});
+	// axis 0: x[0,j,k] + x[1,j,k] = (1+13), ...
+	Value s0 = sum(x, 0);
+	CHECK(s0.data().shape() == std::vector<size_t>{3, 4});
+	CHECK(s0.data().get({0, 0}) == 14.0f);
+	CHECK(s0.data().get({2, 3}) == 12.0f + 24.0f);
+	// axis 1: 1+5+9, ...
+	Value s1 = sum(x, 1);
+	CHECK(s1.data().shape() == std::vector<size_t>{2, 4});
+	CHECK(s1.data().get({0, 0}) == 15.0f);
+	CHECK(s1.data().get({1, 3}) == 60.0f);
+	// axis 2 and -1 agree: 1+2+3+4 = 10
+	Value s2 = sum(x, 2);
+	Value sm1 = sum(x, -1);
+	CHECK(s2.data().shape() == std::vector<size_t>{2, 3});
+	CHECK(s2.data().get({0, 0}) == 10.0f);
+	CHECK(s2.data().data() == sm1.data().data());
+	Value m2 = mean(x, 2);
+	CHECK(m2.data().get({1, 2}) == doctest::Approx(22.5f));
+	// keepdim keeps a size-1 axis
+	CHECK(sum(x, 0, true).data().shape() == std::vector<size_t>{1, 3, 4});
+	CHECK(sum(x, 1, true).data().shape() == std::vector<size_t>{2, 1, 4});
+	CHECK(mean(x, -1, true).data().shape() == std::vector<size_t>{2, 3, 1});
+	CHECK(sum(x, -3).data().data() == s0.data().data());
+	CHECK_THROWS_AS(sum(x, 3), TensorIndexError);
+	CHECK_THROWS_AS(mean(x, -4), TensorIndexError);
+}
+
+TEST_CASE("axis reductions on 1-D tensors and size-1 axes") {
+	Value v = iota_leaf({5});
+	CHECK(sum(v, 0).data().shape() == std::vector<size_t>{1});
+	CHECK(sum(v, 0).data().get({0}) == 15.0f);
+	CHECK(mean(v, -1).data().get({0}) == doctest::Approx(3.0f));
+	CHECK(sum(v, 0, true).data().shape() == std::vector<size_t>{1});
+	Value one = iota_leaf({3, 1, 2});
+	Value s = sum(one, 1);
+	CHECK(s.data().shape() == std::vector<size_t>{3, 2});
+	CHECK(s.data().data() == std::vector<float>{1, 2, 3, 4, 5, 6});
+	CHECK(mean(one, 1, true).data().data() == one.data().data());
+}
+
+TEST_CASE("axis sum, axis mean and rsqrt gradchecks") {
+	for (std::vector<size_t> shape : {std::vector<size_t>{1}, {7, 3}, {33, 5}, {257, 2}}) {
+		for (int axis = 0; axis < static_cast<int>(shape.size()); axis++) {
+			for (bool keep : {false, true}) {
+				Value x = spread_leaf(shape);
+				CHECK(gradcheck([&](Value a) { return weighted_loss(sum(a, axis, keep)); }, x, 1e-2f, 5e-2f));
+				x = spread_leaf(shape);
+				CHECK(gradcheck([&](Value a) { return weighted_loss(mean(a, axis, keep)); }, x, 1e-2f, 5e-2f));
+			}
+		}
+		Value p = spread_leaf(shape);
+		CHECK(gradcheck([](Value a) { return weighted_loss(rsqrt(a)); }, p, 1e-2f, 5e-2f));
+	}
+	Value r = Value::leaf(Tensor({2}, std::vector<float>{4.0f, 0.25f}));
+	CHECK(rsqrt(r).data().data() == std::vector<float>{0.5f, 2.0f});
+}
+
+TEST_CASE("axis reductions are bitwise identical at 1 and 8 threads") {
+	std::vector<float> v(300 * 70 * 9);
+	for (size_t i = 0; i < v.size(); i++) v[i] = std::sin(0.37f * static_cast<float>(i));
+	auto run = [&](size_t threads) {
+		nn::kernels::set_num_threads(threads);
+		std::vector<float> out;
+		for (int axis : {0, 1, 2}) {
+			Value x = Value::leaf(Tensor({300, 70, 9}, v), true);
+			Value y = mean(x, axis);
+			weighted_loss(y).backward();
+			out.insert(out.end(), y.data().data().begin(), y.data().data().end());
+			out.insert(out.end(), x.grad().data().begin(), x.grad().data().end());
+		}
+		return out;
+	};
+	size_t saved = nn::kernels::num_threads();
+	std::vector<float> serial = run(1);
+	std::vector<float> parallel = run(8);
+	nn::kernels::set_num_threads(saved);
+	CHECK(serial == parallel);
+}

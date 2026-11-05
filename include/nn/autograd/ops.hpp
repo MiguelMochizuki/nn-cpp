@@ -63,6 +63,39 @@ Value scale(const Value& a, float scalar);
  */
 Value sum(const Value& x);
 
+/* Public, differentiable sum along one axis
+ *
+ * Parameters:
+ * Value x: operand, any shape
+ * int axis: dimension to reduce; negative counts from the end; out of range throws
+ * bool keepdim: keep the reduced axis with size 1 instead of dropping it
+ *
+ * Returns Value: the sum over axis. Dropping the only axis of a 1-D tensor gives shape {1}.
+ * Backward broadcasts grad_out over the reduced axis. Results do not depend on thread count
+ */
+Value sum(const Value& x, int axis, bool keepdim = false);
+
+/* Public, differentiable mean along one axis
+ *
+ * Parameters:
+ * Value x: operand, any shape
+ * int axis: dimension to reduce; negative counts from the end; out of range throws
+ * bool keepdim: keep the reduced axis with size 1 instead of dropping it
+ *
+ * Returns Value: the sum over axis divided by the axis length. Dropping the only axis of a
+ * 1-D tensor gives shape {1}. Backward broadcasts grad_out / length over the reduced axis
+ */
+Value mean(const Value& x, int axis, bool keepdim = false);
+
+/* Public, differentiable reciprocal square root
+ *
+ * Parameters:
+ * Value x: operand; undefined (inf or NaN) for x <= 0
+ *
+ * Returns Value: 1 / sqrt(x) elementwise; backward multiplies grad_out by -0.5 * x^-1.5
+ */
+Value rsqrt(const Value& x);
+
 /* Public, differentiable dimension permutation
  *
  * Parameters:

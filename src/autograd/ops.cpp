@@ -214,6 +214,60 @@ Tensor insert_axis(const Tensor& t, int axis) {
 	return t.reshape(new_shape);
 }
 
+/**
+ * Shared body of the axis sum and mean
+ *
+ * Parameters:
+ * const Value& x: Operand
+ * int axis: Dimension to reduce, negative counts from the end
+ * bool keepdim: Keep the reduced axis with size 1
+ * bool average: Divide by the axis length
+ *
+ * Returns Value: The reduced Value; each output element is summed serially in axis order,
+ * so the result is independent of the thread count
+ */
+Value reduce_axis(const Value& x, int axis, bool keepdim, bool average) {
+	const std::vector<size_t>& shape = x.data().shape();
+	int nd = static_cast<int>(shape.size());
+	if (axis < -nd || axis >= nd) throw TensorIndexError();
+	size_t ax = static_cast<size_t>(axis < 0 ? axis + nd : axis);
+	size_t n = shape[ax], outer = 1, inner = 1;
+	for (size_t i = 0; i < ax; i++) outer *= shape[i];
+	for (size_t i = ax + 1; i < shape.size(); i++) inner *= shape[i];
+	std::vector<size_t> out_shape;
+	for (size_t i = 0; i < shape.size(); i++) {
+		if (i != ax) out_shape.push_back(shape[i]);
+		else if (keepdim) out_shape.push_back(1);
+	}
+	if (out_shape.empty()) out_shape.push_back(1);
+	float factor = average ? 1.0f / static_cast<float>(n) : 1.0f;
+	Tensor result(out_shape);
+	const float* src = x.data().data().data();
+	float* dst = result.data().data();
+	size_t outputs = outer * inner;
+	kernels::parallel_range(outputs, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, n)),
+	                        [=](size_t lo, size_t hi) {
+		for (size_t j = lo; j < hi; j++) {
+			size_t base = (j / inner) * n * inner + j % inner;
+			float total = 0.0f;
+			for (size_t k = 0; k < n; k++) total += src[base + k * inner];
+			dst[j] = average ? total * factor : total;
+		}
+	});
+	return Value::node(std::move(result), {x}, [x, n, inner, outputs, factor](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		const float* g = grad_out.data().data();
+		float* dx = x.grad().data().data();
+		kernels::parallel_range(outputs, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, n)),
+		                        [=](size_t lo, size_t hi) {
+			for (size_t j = lo; j < hi; j++) {
+				size_t base = (j / inner) * n * inner + j % inner;
+				for (size_t k = 0; k < n; k++) dx[base + k * inner] += g[j] * factor;
+			}
+		});
+	});
+}
+
 }  // namespace
 
 Value add(const Value& a, const Value& b) {
@@ -260,6 +314,22 @@ Value sum(const Value& x) {
 			Tensor ones(x.data().shape(), grad_out.data()[0]);
 			x.grad() += ones;
 		}
+	});
+}
+
+Value sum(const Value& x, int axis, bool keepdim) { return reduce_axis(x, axis, keepdim, false); }
+
+Value mean(const Value& x, int axis, bool keepdim) { return reduce_axis(x, axis, keepdim, true); }
+
+Value rsqrt(const Value& x) {
+	Tensor result = x.data();
+	for (float& v : result.data()) v = 1.0f / std::sqrt(v);
+	return Value::node(std::move(result), {x}, [x](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		const float* in = x.data().data().data();
+		const float* g = grad_out.data().data();
+		float* dst = x.grad().data().data();
+		for (size_t i = 0; i < grad_out.size(); i++) dst[i] += -0.5f * std::pow(in[i], -1.5f) * g[i];
 	});
 }
 
