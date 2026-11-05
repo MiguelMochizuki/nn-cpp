@@ -106,7 +106,7 @@ public:
 	 *
 	 * Returns size_t: product of all dimension sizes
 	 */
-	size_t size() const;
+	size_t size() const { return data_.size(); }
 
 	/* Public, read one element
 	 *

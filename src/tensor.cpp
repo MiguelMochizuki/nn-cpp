@@ -173,7 +173,6 @@ Tensor::Tensor(std::vector<size_t> shape, float fill)
 const std::vector<size_t>& Tensor::shape() const { return shape_; }
 const std::vector<size_t>& Tensor::strides() const { return strides_; }
 size_t Tensor::ndim() const { return shape_.size(); }
-size_t Tensor::size() const { return data_.size(); }
 
 size_t Tensor::flat_index(const std::vector<size_t>& idx) const {
 	if (idx.size() != shape_.size()) {
