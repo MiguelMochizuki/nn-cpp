@@ -37,4 +37,11 @@ std::vector<std::pair<std::string, Value>> Sequential::named_parameters() const 
 	return all_params;
 }
 
+void Sequential::train(bool mode) {
+	for (auto& layer : layers_) {
+		layer->train(mode);
+	}
+	training_ = mode;
+}
+
 }  // namespace nn

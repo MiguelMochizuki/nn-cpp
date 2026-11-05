@@ -53,6 +53,15 @@ public:
 	 */
 	std::vector<std::pair<std::string, Value>> named_parameters() const override;
 
+	/* Public, set the mode on every child, then on this container
+	 *
+	 * Parameters:
+	 * bool mode: true for training, false for evaluation
+	 *
+	 * Returns void: none
+	 */
+	void train(bool mode = true) override;
+
 private:
 	std::vector<std::unique_ptr<Module>> layers_;
 };

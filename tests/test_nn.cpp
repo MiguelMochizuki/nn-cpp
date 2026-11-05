@@ -200,3 +200,40 @@ TEST_CASE("named_parameters and parameters list the same handles in the same ord
 	REQUIRE(named.size() == plain.size());
 	for (size_t i = 0; i < plain.size(); i++) CHECK(&named[i].second.data() == &plain[i].data());
 }
+
+namespace {
+
+// Overrides only forward, as a v1.0.0 subclass would
+class ForwardOnly : public Module {
+public:
+	Value forward(const Value& input) override { return input; }
+	// The test reads the flag through a Sequential, so expose a probe for a bare child
+	bool flag() const { return training_; }
+};
+
+}  // namespace
+
+TEST_CASE("Module defaults to training mode") {
+	ForwardOnly m;
+	CHECK(m.is_training());
+}
+
+TEST_CASE("Sequential eval and train reach every child") {
+	auto seq = std::make_unique<Sequential>();
+	ForwardOnly* kids[3];
+	for (auto& k : kids) {
+		auto m = std::make_unique<ForwardOnly>();
+		k = m.get();
+		seq->add(std::move(m));
+	}
+	seq->eval();
+	CHECK_FALSE(seq->is_training());
+	for (auto* k : kids) {
+		CHECK_FALSE(k->flag());
+	}
+	seq->train();
+	CHECK(seq->is_training());
+	for (auto* k : kids) {
+		CHECK(k->flag());
+	}
+}
