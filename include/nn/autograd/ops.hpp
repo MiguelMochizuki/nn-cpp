@@ -197,6 +197,26 @@ Value softmax(const Value& x, int axis);
  */
 Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride, int padding);
 
+/* Public, differentiable 2D convolution with dilation and groups
+ *
+ * Parameters:
+ * Value x: input, shape {N, Cin, H, W}
+ * Value weight: kernel, shape {Cout, Cin/groups, kH, kW}; kH and kW may differ
+ * Value bias: per-output-channel bias, shape {Cout}
+ * int stride: convolution stride, applied to both spatial dimensions
+ * int padding: zero-padding applied to both spatial dimensions before convolving
+ * int dilation: spacing between kernel taps, at least 1
+ * int groups: number of channel groups; must divide Cin and Cout (groups == Cin is depthwise)
+ *
+ * Returns Value: shape {N, Cout, H_out, W_out}, where H_out = (H + 2*padding - dilation*(kH-1) - 1) /
+ * stride + 1 and W_out analogously. Throws TensorShapeError on a bad groups/dilation/stride value,
+ * a channel mismatch or an effective kernel larger than the padded input. With dilation == 1 and
+ * groups == 1 it calls the 5-argument overload, so results are bitwise identical to it; otherwise
+ * it runs a per-group im2col + sgemm path, batch-parallel with results independent of thread count
+ */
+Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride, int padding, int dilation,
+	int groups);
+
 /* Public, differentiable 2D max pooling
  *
  * Parameters:

@@ -458,3 +458,19 @@ TEST_CASE("GlobalAvgPool2d equals the manual spatial mean and passes gradcheck")
 	CHECK(gradcheck(f, Value::leaf(xt, true)));
 	CHECK_THROWS_AS(gap.forward(Value::leaf(Tensor({2, 3}, 1.0f))), TensorShapeError);
 }
+
+TEST_CASE("Conv2d with rectangular kernel, dilation and groups") {
+	Conv2d depthwise(4, 4, std::make_pair<size_t, size_t>(1, 3), 1, 1, 2, 4);
+	CHECK(depthwise.parameters()[0].data().shape() == std::vector<size_t>{4, 1, 1, 3});
+	Value input = Value::leaf(Tensor({2, 4, 6, 6}, 1.0f), false);
+	// H: 6 + 2 - 0 - 1 + 1 = 8; W: 6 + 2 - 2*2 - 1 + 1 = 4
+	CHECK(depthwise.forward(input).data().shape() == std::vector<size_t>{2, 4, 8, 4});
+	for (Value& p : depthwise.parameters()) {
+		auto f = [&depthwise, &input](Value) { return sum(depthwise.forward(input)); };
+		CHECK(gradcheck(f, p, 1e-3f, 0.1f));
+	}
+	CHECK_THROWS_AS(Conv2d(4, 4, std::make_pair<size_t, size_t>(3, 3), 1, 0, 1, 3), std::invalid_argument);
+	CHECK_THROWS_AS(Conv2d(4, 6, std::make_pair<size_t, size_t>(3, 3), 1, 0, 1, 4), std::invalid_argument);
+	CHECK_THROWS_AS(Conv2d(4, 4, std::make_pair<size_t, size_t>(3, 3), 1, 0, 0, 1), std::invalid_argument);
+	CHECK_THROWS_AS(Conv2d(4, 4, std::make_pair<size_t, size_t>(3, 3), 1, 0, 1, 0), std::invalid_argument);
+}

@@ -924,3 +924,110 @@ TEST_CASE("avgpool2d forward and backward are bitwise identical for any thread c
 	}
 	nn::kernels::set_num_threads(saved);
 }
+
+namespace {
+// Direct grouped, dilated convolution (rectangular kernels allowed), the reference for the general path
+Tensor reference_conv_general(const Tensor& x, const Tensor& w, const Tensor& b, size_t stride, size_t pad, size_t dil,
+	size_t groups) {
+	size_t N = x.shape()[0], Cin = x.shape()[1], H = x.shape()[2], W = x.shape()[3];
+	size_t Cout = w.shape()[0], Cg = w.shape()[1], kh = w.shape()[2], kw = w.shape()[3];
+	size_t Ho = (H + 2 * pad - dil * (kh - 1) - 1) / stride + 1, Wo = (W + 2 * pad - dil * (kw - 1) - 1) / stride + 1;
+	size_t Cog = Cout / groups;
+	(void)Cin;
+	Tensor out({N, Cout, Ho, Wo});
+	for (size_t n = 0; n < N; n++)
+		for (size_t co = 0; co < Cout; co++)
+			for (size_t oh = 0; oh < Ho; oh++)
+				for (size_t ow = 0; ow < Wo; ow++) {
+					float acc = b.data()[co];
+					size_t g = co / Cog;
+					for (size_t c = 0; c < Cg; c++)
+						for (size_t i = 0; i < kh; i++)
+							for (size_t j = 0; j < kw; j++) {
+								long ih = static_cast<long>(oh * stride + i * dil) - static_cast<long>(pad);
+								long iw = static_cast<long>(ow * stride + j * dil) - static_cast<long>(pad);
+								if (ih < 0 || iw < 0 || ih >= static_cast<long>(H) || iw >= static_cast<long>(W)) continue;
+								acc += x.get({n, g * Cg + c, static_cast<size_t>(ih), static_cast<size_t>(iw)}) *
+								       w.get({co, c, i, j});
+							}
+					out.at({n, co, oh, ow}) = acc;
+				}
+	return out;
+}
+}  // namespace
+
+TEST_CASE("conv2d with dilation 1 and groups 1 is bitwise identical to the 5-argument overload") {
+	Tensor xv = patterned({3, 2, 9, 7}, 0.07f), wv = patterned({4, 2, 3, 3}, 0.05f), bv = patterned({4}, 0.1f);
+	Value y5 = conv2d(Value::leaf(xv, false), Value::leaf(wv, false), Value::leaf(bv, false), 2, 1);
+	Value y7 = conv2d(Value::leaf(xv, false), Value::leaf(wv, false), Value::leaf(bv, false), 2, 1, 1, 1);
+	REQUIRE(y5.data().shape() == y7.data().shape());
+	for (size_t i = 0; i < y5.data().size(); i++) CHECK(y5.data().data()[i] == y7.data().data()[i]);
+}
+
+TEST_CASE("conv2d general path matches a direct reference and is independent of the thread count") {
+	struct Cfg { size_t N, Cin, H, W, Cout, kh, kw, stride, pad, dil, groups; };
+	std::vector<Cfg> cfgs = {
+		{2, 4, 9, 9, 4, 3, 3, 1, 2, 2, 1},   // dilation 2
+		{2, 4, 9, 9, 6, 3, 3, 1, 1, 1, 2},   // groups 2
+		{2, 4, 9, 9, 4, 3, 3, 2, 1, 1, 4},   // depthwise
+		{2, 4, 9, 9, 8, 3, 3, 2, 2, 2, 2},   // everything at once
+		{3, 2, 6, 8, 2, 1, 3, 1, 1, 2, 2},   // rectangular, depthwise
+	};
+	size_t saved = nn::kernels::num_threads();
+	for (const Cfg& c : cfgs) {
+		Tensor xv = patterned({c.N, c.Cin, c.H, c.W}, 0.07f);
+		Tensor wv = patterned({c.Cout, c.Cin / c.groups, c.kh, c.kw}, 0.05f);
+		Tensor bv = patterned({c.Cout}, 0.1f);
+		Tensor expect = reference_conv_general(xv, wv, bv, c.stride, c.pad, c.dil, c.groups);
+		std::vector<float> gx1, gw1, gb1;
+		for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+			nn::kernels::set_num_threads(threads);
+			Value x = Value::leaf(xv, true), w = Value::leaf(wv, true), b = Value::leaf(bv, true);
+			Value y = conv2d(x, w, b, static_cast<int>(c.stride), static_cast<int>(c.pad), static_cast<int>(c.dil),
+				static_cast<int>(c.groups));
+			REQUIRE(y.data().shape() == expect.shape());
+			for (size_t i = 0; i < expect.size(); i++) CHECK(y.data().data()[i] == doctest::Approx(expect.data()[i]).epsilon(1e-4));
+			sum(y).backward();
+			if (threads == 1) {
+				gx1 = x.grad().data(); gw1 = w.grad().data(); gb1 = b.grad().data();
+			} else {
+				CHECK(x.grad().data() == gx1);
+				CHECK(w.grad().data() == gw1);
+				CHECK(b.grad().data() == gb1);
+			}
+		}
+	}
+	nn::kernels::set_num_threads(saved);
+}
+
+TEST_CASE("conv2d general path gradchecks input, weight and bias") {
+	struct Cfg { std::vector<size_t> x, w; int stride, pad, dil, groups; };
+	std::vector<Cfg> cfgs = {
+		{{1, 2, 3, 3}, {2, 2, 3, 3}, 1, 2, 2, 1},  // dilation 2, padding 2
+		{{2, 4, 7, 7}, {4, 2, 3, 3}, 1, 1, 1, 2},  // groups 2
+		{{1, 3, 5, 5}, {3, 1, 3, 3}, 1, 1, 1, 3},  // depthwise
+		{{1, 2, 5, 6}, {2, 2, 1, 3}, 1, 0, 1, 1},  // rectangular 1x3 (groups 1, dilation 1: delegated)
+		{{1, 2, 5, 6}, {2, 1, 1, 3}, 1, 1, 2, 2},  // rectangular, dilated, depthwise
+	};
+	for (const Cfg& c : cfgs) {
+		Tensor xv = Tensor::random(c.x, -1.0f, 1.0f), wv = Tensor::random(c.w, -0.5f, 0.5f);
+		Tensor bv = Tensor::random({c.w[0]}, -0.2f, 0.2f);
+		Value x = Value::leaf(xv, true), w = Value::leaf(wv, true), b = Value::leaf(bv, true);
+		auto op = [&](Value xi, Value wi, Value bi) { return conv2d(xi, wi, bi, c.stride, c.pad, c.dil, c.groups); };
+		CHECK(gradcheck([&](Value v) { return sum(op(v, w, b)); }, x, 1e-3f, 0.1f));
+		CHECK(gradcheck([&](Value v) { return sum(op(x, v, b)); }, w, 1e-3f, 0.1f));
+		CHECK(gradcheck([&](Value v) { return sum(op(x, w, v)); }, b, 1e-3f, 0.1f));
+	}
+}
+
+TEST_CASE("conv2d general path rejects bad arguments") {
+	Value x = Value::leaf(Tensor({1, 4, 5, 5}, 1.0f), false);
+	Value w = Value::leaf(Tensor({4, 2, 3, 3}, 1.0f), false);
+	Value b = Value::leaf(Tensor({4}, 0.0f), false);
+	CHECK_NOTHROW(conv2d(x, w, b, 1, 0, 1, 2));
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 1, 3), TensorShapeError);  // groups does not divide channels
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 1, 4), TensorShapeError);  // weight Cin/groups mismatch
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 0, 2), TensorShapeError);  // dilation 0
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 3, 2), TensorShapeError);  // effective kernel 7 > 5
+	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 1, 0), TensorShapeError);  // groups 0
+}

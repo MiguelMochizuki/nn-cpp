@@ -5,6 +5,7 @@
  */
 
 #include "nn/autograd/ops.hpp"
+#include "nn/kernels/gemm.hpp"
 #include "nn/kernels/parallel.hpp"
 
 #include <algorithm>
@@ -513,6 +514,141 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
 					col2im(grad_col, x_shape, kh, kw, static_cast<size_t>(stride), static_cast<size_t>(padding));
 				x.grad() += grad_x;
 			}
+		});
+}
+
+namespace {
+/**
+ * Fills the im2col matrix of one group of one sample, honouring dilation
+ *
+ * Parameters:
+ * const float* x: Start of the group's Cg input channels, each H x W
+ * float* col: Output, (Cg * kh * kw) x (h_out * w_out), row-major
+ * size_t Cg, H, W, kh, kw, h_out, w_out: Geometry
+ * size_t stride, padding, dilation: Convolution parameters
+ *
+ * Returns void
+ */
+void group_im2col(const float* x, float* col, size_t Cg, size_t H, size_t W, size_t kh, size_t kw, size_t h_out,
+	size_t w_out, size_t stride, size_t padding, size_t dilation) {
+	for (size_t c = 0; c < Cg; c++)
+		for (size_t i = 0; i < kh; i++)
+			for (size_t j = 0; j < kw; j++) {
+				float* row = col + ((c * kh + i) * kw + j) * h_out * w_out;
+				for (size_t oh = 0; oh < h_out; oh++)
+					for (size_t ow = 0; ow < w_out; ow++) {
+						// Unsigned wrap-around turns negative (padding) positions into huge values the bounds test rejects
+						size_t ih = oh * stride + i * dilation - padding;
+						size_t iw = ow * stride + j * dilation - padding;
+						row[oh * w_out + ow] = (ih < H && iw < W) ? x[(c * H + ih) * W + iw] : 0.0f;
+					}
+			}
+}
+
+/**
+ * Adds the gradient of one group's im2col matrix back into the input, the transpose of group_im2col
+ *
+ * Parameters: as group_im2col, with const float* col read and float* x accumulated into
+ *
+ * Returns void
+ */
+void group_col2im(const float* col, float* x, size_t Cg, size_t H, size_t W, size_t kh, size_t kw, size_t h_out,
+	size_t w_out, size_t stride, size_t padding, size_t dilation) {
+	for (size_t c = 0; c < Cg; c++)
+		for (size_t i = 0; i < kh; i++)
+			for (size_t j = 0; j < kw; j++) {
+				const float* row = col + ((c * kh + i) * kw + j) * h_out * w_out;
+				for (size_t oh = 0; oh < h_out; oh++)
+					for (size_t ow = 0; ow < w_out; ow++) {
+						size_t ih = oh * stride + i * dilation - padding;
+						size_t iw = ow * stride + j * dilation - padding;
+						if (ih < H && iw < W) x[(c * H + ih) * W + iw] += row[oh * w_out + ow];
+					}
+			}
+}
+}  // namespace
+
+Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride, int padding, int dilation,
+	int groups) {
+	if (dilation == 1 && groups == 1) return conv2d(x, weight, bias, stride, padding);
+	if (x.data().ndim() != 4 || weight.data().ndim() != 4) throw TensorShapeError();
+	if (stride <= 0 || padding < 0 || dilation <= 0 || groups <= 0) throw TensorShapeError();
+	size_t G = static_cast<size_t>(groups), D = static_cast<size_t>(dilation);
+	size_t S = static_cast<size_t>(stride), P = static_cast<size_t>(padding);
+	size_t Cout = weight.data().shape()[0], Cg = weight.data().shape()[1];
+	size_t kh = weight.data().shape()[2], kw = weight.data().shape()[3];
+	size_t N = x.data().shape()[0], Cin = x.data().shape()[1];
+	size_t H = x.data().shape()[2], W = x.data().shape()[3];
+	if (Cin % G != 0 || Cout % G != 0 || Cg != Cin / G || bias.data().size() != Cout || kh == 0 || kw == 0) {
+		throw TensorShapeError();
+	}
+	size_t ekh = D * (kh - 1) + 1, ekw = D * (kw - 1) + 1;
+	if (ekh > H + 2 * P || ekw > W + 2 * P) throw TensorShapeError();
+	size_t h_out = (H + 2 * P - ekh) / S + 1, w_out = (W + 2 * P - ekw) / S + 1;
+	size_t hw = h_out * w_out, K = Cg * kh * kw, Cog = Cout / G;
+	size_t x_sample = Cin * H * W, y_sample = Cout * hw, w_size = Cout * K;
+
+	Tensor result({N, Cout, h_out, w_out}, 0.0f);
+	{
+		const float* xd = x.data().data().data();
+		const float* wd = weight.data().data().data();
+		const float* bd = bias.data().data().data();
+		float* yd = result.data().data();
+		kernels::parallel_range(N, 1, [=](size_t lo, size_t hi) {
+			std::vector<float> col(K * hw);
+			for (size_t n = lo; n < hi; n++)
+				for (size_t g = 0; g < G; g++) {
+					group_im2col(xd + n * x_sample + g * Cg * H * W, col.data(), Cg, H, W, kh, kw, h_out, w_out, S, P, D);
+					float* y = yd + n * y_sample + g * Cog * hw;
+					kernels::sgemm(false, false, Cog, hw, K, wd + g * Cog * K, K, col.data(), hw, y, hw, false);
+					for (size_t c = 0; c < Cog; c++)
+						for (size_t i = 0; i < hw; i++) y[c * hw + i] += bd[g * Cog + c];
+				}
+		});
+	}
+
+	std::vector<size_t> x_shape = x.data().shape();
+	return Value::node(std::move(result), {x, weight, bias},
+		[=](const Tensor& grad_out) {
+			const float* go = grad_out.data().data();
+			const float* xd = x.data().data().data();
+			const float* wd = weight.data().data().data();
+			bool need_x = x.requires_grad(), need_w = weight.requires_grad();
+			Tensor grad_x(x_shape, 0.0f);
+			// Per-sample weight gradients, summed in sample order below so the result is thread-count independent
+			std::vector<float> gw(need_w ? N * w_size : 0);
+			float* gxd = grad_x.data().data();
+			float* gwd = gw.data();
+			kernels::parallel_range(N, 1, [=](size_t lo, size_t hi) {
+				std::vector<float> col(K * hw);
+				for (size_t n = lo; n < hi; n++)
+					for (size_t g = 0; g < G; g++) {
+						const float* gy = go + n * y_sample + g * Cog * hw;
+						if (need_w) {
+							group_im2col(xd + n * x_sample + g * Cg * H * W, col.data(), Cg, H, W, kh, kw, h_out, w_out, S, P, D);
+							kernels::sgemm(false, true, Cog, K, hw, gy, hw, col.data(), hw,
+								gwd + n * w_size + g * Cog * K, K, false);
+						}
+						if (need_x) {
+							kernels::sgemm(true, false, K, hw, Cog, wd + g * Cog * K, K, gy, hw, col.data(), hw, false);
+							group_col2im(col.data(), gxd + n * x_sample + g * Cg * H * W, Cg, H, W, kh, kw, h_out, w_out, S, P, D);
+						}
+					}
+			});
+			if (bias.requires_grad()) {
+				Tensor grad_bias({Cout}, 0.0f);
+				for (size_t n = 0; n < N; n++)
+					for (size_t c = 0; c < Cout; c++)
+						for (size_t i = 0; i < hw; i++) grad_bias.data()[c] += go[n * y_sample + c * hw + i];
+				bias.grad() += grad_bias;
+			}
+			if (need_w) {
+				Tensor grad_weight(weight.data().shape(), 0.0f);
+				for (size_t n = 0; n < N; n++)
+					for (size_t i = 0; i < w_size; i++) grad_weight.data()[i] += gw[n * w_size + i];
+				weight.grad() += grad_weight;
+			}
+			if (need_x) x.grad() += grad_x;
 		});
 }
 
