@@ -29,8 +29,27 @@ public:
 	 */
 	Linear(size_t in_features, size_t out_features);
 
+	/* Public, compute input @ weight^T + bias
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: input @ weight^T + bias, with out_features as the last dimension
+	 */
 	Value forward(const Value& input) override;
+	/* Public, list the trainable parameters
+	 *
+	 * Parameters: none
+	 *
+	 * Returns vector<Value>: the parameters, in the same order as named_parameters()
+	 */
 	std::vector<Value> parameters() const override;
+	/* Public, list the trainable parameters with stable names
+	 *
+	 * Parameters: none
+	 *
+	 * Returns vector<pair<string, Value>>: (name, handle) pairs, in the same order as parameters()
+	 */
 	std::vector<std::pair<std::string, Value>> named_parameters() const override;
 
 private:

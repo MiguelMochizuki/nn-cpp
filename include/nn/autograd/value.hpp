@@ -200,6 +200,13 @@ public:
 	static size_t live_node_count();
 
 private:
+	/* Private, wrap an existing node; used by leaf() and node()
+	 *
+	 * Parameters:
+	 * shared_ptr<NodeImpl> impl: node to share
+	 *
+	 * Returns Value: none (constructor)
+	 */
 	explicit Value(std::shared_ptr<NodeImpl> impl);
 	std::shared_ptr<NodeImpl> impl_;
 };

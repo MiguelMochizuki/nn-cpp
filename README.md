@@ -18,19 +18,68 @@ The design takes inspiration from PyTorch's vocabulary (`Module`, `Sequential`, 
 ## Project Organization
 
 ```
-apps/           examples: xor/ (XOR demo) and mnist/ (IDX loader, MNIST trainer and its tests)
-cmake/          FetchDoctest.cmake (fetches doctest for the tests)
+apps/
+  bench/          benchmark harness (bench, bench_tests), run_baseline.sh / profile.sh, compare_csv.py (before/after CSV ratios)
+  mnist/          IDX parser, MnistDataset, train_mnist and its tests
+  xor/            xor_demo
+  CMakeLists.txt
+cmake/            FetchDoctest.cmake (fetches doctest for the tests)
+docs/
+  baseline/       recorded benchmark CSVs, perf profiles and MNIST runs: top level = Phase 0 baseline,
+                  phase1/ to phase3/ and followups/ = later runs
+  phase0-results.md ... phase3-results.md, followups-results.md   per-phase measurements
 include/nn/
-  autograd/     Value and the differentiable operations
-  nn/           Module, layers, losses and Sequential
-  optim/        Optimizer, SGD and Adam
-  data/         Dataset and DataLoader
-  kernels/      gemm.hpp: blocked sgemm with AVX2/FMA and SSE2 microkernels, unpacked loop elsewhere; parallel.hpp: thread pool
-  tensor.hpp    the Tensor type
+  autograd/       Value and the differentiable operations
+  nn/             Module, layers, losses and Sequential
+  optim/          Optimizer, SGD and Adam
+  data/           Dataset and DataLoader
+  kernels/        gemm.hpp: blocked sgemm (AVX2/FMA and SSE2 microkernels, unpacked loop elsewhere);
+                  parallel.hpp: fork/join thread pool (parallel_for, parallel_range)
+  tensor.hpp      the Tensor type
   checkpoint.hpp  save and load of weights and optimizer state
-src/            implementations, mirroring include/nn
-tests/          unit tests (doctest) and the gradient-check helper
+src/              implementations, mirroring include/nn
+tests/            doctest unit tests, gradcheck.hpp (gradient check) and reference_gemm.hpp (naive GEMM oracle)
+CMakeLists.txt, CONTRIBUTING.md, LICENSE
 ```
+
+## Main Tools & Stack
+
+- Language: C++17 (`CMAKE_CXX_STANDARD 17`), no external math or ML libraries.
+- Build: CMake 3.16+; options `NN_BUILD_TESTS`, `NN_BUILD_APPS`, `NN_NATIVE` (`-march=native`).
+- Tests: [doctest](https://github.com/doctest/doctest), fetched with `FetchContent` (`cmake/FetchDoctest.cmake`), run through `ctest`.
+- Threading: `std::thread` pool in `nn/kernels/parallel.hpp` (linked via `Threads::Threads`).
+- SIMD: the GEMM microkernel is chosen at compile time: AVX2 + FMA when both are enabled (for example `-DNN_NATIVE=ON` on a CPU that has them), SSE2 on other x86-64 builds, a scalar/unpacked path elsewhere.
+- Benchmark tooling: `apps/bench` (C++ harness plus shell scripts) and `compare_csv.py` (Python 3, standard library only).
+
+## Key Outputs & Reports
+
+### Speedup since the Phase 0 baseline
+
+Training-step time (`total_ms`: forward, backward and optimizer step) from the committed benchmark CSVs. Machine: Intel i5-12450HX (4 P-cores with hyperthreading = cpus 0-7). Protocol: `NN_NUM_THREADS=8 taskset -c 0-7`, 15 timed runs per row. "Phase 0" is the single pinned t8 baseline file (`docs/baseline/native-pinned-t8.csv`, `portable-pinned-t8.csv`); "Today" is the median of the three `new-r1..r3` runs in `docs/baseline/followups/packb-native/` and `packb-portable/`. The native build uses `-DNN_NATIVE=ON`; the portable build does not. The CPU governor was `powersave`, so absolute times are noisy; see [docs/followups-results.md](docs/followups-results.md).
+
+| workload | native Phase 0 (ms) | native today (ms) | native speedup | portable Phase 0 (ms) | portable today (ms) | portable speedup |
+|---|---|---|---|---|---|---|
+| cnn_mnist | 17.63 | 2.64 | 6.7x | 20.39 | 3.88 | 5.3x |
+| mlp_wide | 173.48 | 14.18 | 12.2x | 215.13 | 26.56 | 8.1x |
+| cnn_large | 1030.92 | 250.22 | 4.1x | 1180.54 | 304.10 | 3.9x |
+| mlp_adam | 171.24 | 16.39 | 10.4x | 228.33 | 29.01 | 7.9x |
+
+`python3 apps/bench/compare_csv.py before.csv after.csv` prints the same kind of ratio for any two result files.
+
+### Real MNIST
+
+`train_mnist` on the full MNIST set (3 epochs, `NN_NUM_THREADS=8 taskset -c 0-7`). Weight init and shuffling are unseeded, so accuracy varies from run to run.
+
+| build | test accuracy | wall time | source |
+|---|---|---|---|
+| native | 98.58% | 17.8 s | `docs/baseline/phase3/mnist-native.txt` |
+| portable | 98.43% | 46.3 s | `docs/baseline/phase1/mnist-portable.txt` (latest portable run) |
+
+The Phase 0 runs (98.11% native, 98.47% portable) took about 1:42 each on a single thread.
+
+### Per-phase reports
+
+[Phase 0](docs/phase0-results.md) (baseline and profile), [Phase 1](docs/phase1-results.md), [Phase 2](docs/phase2-results.md), [Phase 3](docs/phase3-results.md), [follow-ups](docs/followups-results.md).
 
 ## Build
 
@@ -154,7 +203,8 @@ include/nn/
 │   └── loss.hpp
 ├── optim/
 │   ├── optimizer.hpp         Optimizer: base interface
-│   └── sgd.hpp                SGD (with optional momentum)
+│   ├── sgd.hpp                SGD (with optional momentum)
+│   └── adam.hpp               Adam
 └── data/
     ├── dataset.hpp            Dataset: interface you implement for your own data
     └── dataloader.hpp         DataLoader: batching and shuffling over any Dataset
@@ -199,7 +249,7 @@ This project targets clarity and correctness over raw throughput: matrix product
 
 ## Documentation Conventions
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Code comments and docstrings follow [CONTRIBUTING.md](CONTRIBUTING.md#documentation-conventions).
 
 ## License
 

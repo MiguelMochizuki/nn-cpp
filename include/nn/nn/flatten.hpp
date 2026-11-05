@@ -18,6 +18,13 @@ namespace nn {
  */
 class Flatten : public Module {
 public:
+	/* Public, reshape {N, d1, d2, ...} to {N, d1*d2*...}
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: reshaped output, graph-connected to input
+	 */
 	Value forward(const Value& input) override {
 		size_t n = input.data().shape()[0];
 		size_t rest = input.data().size() / n;

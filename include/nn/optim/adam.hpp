@@ -35,8 +35,27 @@ public:
 	 */
 	Adam(std::vector<Value> params, float lr = 1e-3f, float beta1 = 0.9f, float beta2 = 0.999f, float eps = 1e-8f);
 
+	/* Public, apply one update to every parameter from its current grad, advancing t_
+	 *
+	 * Parameters: none
+	 *
+	 * Returns void: none
+	 */
 	void step() override;
+	/* Public, snapshot m_ and v_ moments and the step count t_ for checkpointing
+	 *
+	 * Parameters: none
+	 *
+	 * Returns OptimizerState: named tensors that load_state() accepts
+	 */
 	OptimizerState state() const override;
+	/* Public, restore a snapshot produced by state(); all-or-nothing
+	 *
+	 * Parameters:
+	 * OptimizerState state: snapshot to restore
+	 *
+	 * Returns void: none; throws std::runtime_error and leaves this optimizer unchanged on a name or shape mismatch
+	 */
 	void load_state(const OptimizerState& state) override;
 
 private:

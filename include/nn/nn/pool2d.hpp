@@ -29,6 +29,13 @@ public:
 	 */
 	MaxPool2d(size_t kernel_size, size_t stride);
 
+	/* Public, max-pool each channel over kernel_size windows
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: shape {N, C, H_out, W_out}
+	 */
 	Value forward(const Value& input) override;
 
 private:
