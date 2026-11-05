@@ -158,7 +158,7 @@ void micro_portable(size_t kc, const float* ap, const float* bp, float* c, size_
 void micro_avx2(size_t kc, const float* ap, const float* bp, float* c, size_t ldc,
 		size_t mr, size_t nr, Store mode) {
 	static_assert(kMR == 6 && kNR == 16, "micro_avx2 is written for a 6 x 16 tile");
-	alignas(32) float buf[kMR * kNR];
+	alignas(32) float buf[kMR * kNR] = {};
 	bool edge = mr < kMR || nr < kNR;
 	float* t = c;
 	size_t ldt = ldc;
@@ -215,7 +215,7 @@ void micro_avx2(size_t kc, const float* ap, const float* bp, float* c, size_t ld
 void micro_sse2(size_t kc, const float* ap, const float* bp, float* c, size_t ldc,
 		size_t mr, size_t nr, Store mode) {
 	static_assert(kMR == 6 && kNR == 16, "micro_sse2 is written for a 6 x 16 tile");
-	alignas(16) float buf[kMR * kNR];
+	alignas(16) float buf[kMR * kNR] = {};
 	bool edge = mr < kMR || nr < kNR;
 	float* t = c;
 	size_t ldt = ldc;
