@@ -176,6 +176,83 @@ TEST_CASE("matmul gradcheck") {
 	CHECK(gradcheck(f, a));
 }
 
+namespace {
+
+/**
+ * Builds a leaf Tensor of the given shape filled with a deterministic sine pattern
+ *
+ * Parameters:
+ * vector<size_t> shape: Shape of the tensor
+ * float phase: Offset into the pattern, so different tensors differ
+ *
+ * Returns Tensor: The filled tensor
+ */
+Tensor sine_tensor(const std::vector<size_t>& shape, float phase) {
+	Tensor t(shape);
+	for (size_t i = 0; i < t.size(); i++) t.data()[i] = std::sin(0.7f * i + phase);
+	return t;
+}
+
+/**
+ * Scalar loss sum(out * w) with a fixed non-uniform w, so an all-ones upstream
+ * gradient cannot hide an orientation bug
+ *
+ * Parameters:
+ * Value out: The op output
+ *
+ * Returns Value: Scalar loss
+ */
+Value weighted_sum(const Value& out) {
+	Tensor w(out.data().shape());
+	for (size_t i = 0; i < w.size(); i++) w.data()[i] = 0.3f + 0.1f * i;
+	return sum(mul(out, Value::leaf(w, false)));
+}
+
+}  // namespace
+
+TEST_CASE("matmul gradcheck wrt b") {
+	Value a = Value::leaf(sine_tensor({2, 3}, 0.1f), false);
+	Value b = Value::leaf(sine_tensor({3, 2}, 0.9f), true);
+	auto f = [a](Value x) mutable { return weighted_sum(matmul(a, x)); };
+	CHECK(gradcheck(f, b));
+}
+
+TEST_CASE("matmul batched gradcheck with 2D b reduces the b gradient") {
+	Value a = Value::leaf(sine_tensor({2, 7, 3}, 0.1f), true);
+	Value b = Value::leaf(sine_tensor({3, 5}, 0.9f), true);
+	auto fa = [b](Value x) mutable { return weighted_sum(matmul(x, b)); };
+	CHECK(gradcheck(fa, a));
+	auto fb = [a](Value x) mutable { return weighted_sum(matmul(a, x)); };
+	CHECK(gradcheck(fb, b));
+}
+
+TEST_CASE("matmul_bt batched gradcheck with 2D b reduces the b gradient") {
+	Value a = Value::leaf(sine_tensor({2, 7, 3}, 0.1f), true);
+	Value b = Value::leaf(sine_tensor({5, 3}, 0.9f), true);
+	auto fa = [b](Value x) mutable { return weighted_sum(matmul_bt(x, b)); };
+	CHECK(gradcheck(fa, a));
+	auto fb = [a](Value x) mutable { return weighted_sum(matmul_bt(a, x)); };
+	CHECK(gradcheck(fb, b));
+}
+
+TEST_CASE("matmul_bt gradcheck") {
+	Value b = Value::leaf(Tensor({4, 3}, std::vector<float>{1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 0, -1}), true);
+	Value a = Value::leaf(Tensor({2, 3}, std::vector<float>{0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f}), true);
+	auto fa = [b](Value x) mutable { return sum(matmul_bt(x, b)); };
+	CHECK(gradcheck(fa, a));
+	auto fb = [a](Value x) mutable { return sum(matmul_bt(a, x)); };
+	CHECK(gradcheck(fb, b));
+}
+
+TEST_CASE("matmul_bt forward equals matmul with explicit transpose") {
+	Value a = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6}), false);
+	Value b = Value::leaf(Tensor({4, 3}, std::vector<float>{1, 0, 2, 3, 1, 0, -1, 2, 2, 0.5f, 0.5f, 0.5f}), false);
+	Tensor got = matmul_bt(a, b).data();
+	Tensor want = matmul(a.data(), b.data().transpose({1, 0}));
+	CHECK(got.shape() == want.shape());
+	for (size_t i = 0; i < want.size(); i++) CHECK(got.data()[i] == doctest::Approx(want.data()[i]).epsilon(1e-4));
+}
+
 TEST_CASE("matmul forward matches Tensor matmul") {
 	Value a = Value::leaf(Tensor({2, 2}, std::vector<float>{1, 2, 3, 4}), false);
 	Value b = Value::leaf(Tensor({2, 2}, std::vector<float>{5, 6, 7, 8}), false);

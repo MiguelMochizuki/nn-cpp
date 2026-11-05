@@ -8,6 +8,8 @@
 #include "doctest/doctest.h"
 #include "nn/tensor.hpp"
 
+#include <cmath>
+
 using namespace nn;
 
 TEST_CASE("zero-initialized construction") {
@@ -213,10 +215,74 @@ TEST_CASE("matmul batched with matching batch dim") {
 	CHECK(c.get({1, 0, 0}) == doctest::Approx(2.0f));
 }
 
+TEST_CASE("matmul with empty matrices") {
+	Tensor a = matmul(Tensor({0, 3}), Tensor({3, 2}));
+	CHECK(a.shape() == std::vector<size_t>{0, 2});
+	Tensor b = matmul(Tensor({2, 0}), Tensor({0, 3}));
+	CHECK(b.shape() == std::vector<size_t>{2, 3});
+	for (float v : b.data()) CHECK(v == 0.0f);
+	Tensor c = matmul(Tensor({2, 3}), Tensor({3, 0}));
+	CHECK(c.shape() == std::vector<size_t>{2, 0});
+}
+
 TEST_CASE("matmul inner dimension mismatch throws") {
 	Tensor a({2, 3});
 	Tensor b({4, 2});
 	CHECK_THROWS_AS(matmul(a, b), TensorShapeError);
+}
+
+namespace {
+
+Tensor ramp(std::vector<size_t> shape, float phase) {
+	size_t n = 1;
+	for (size_t d : shape) n *= d;
+	std::vector<float> v(n);
+	for (size_t i = 0; i < n; i++) v[i] = std::sin(0.37f * static_cast<float>(i) + phase);
+	return Tensor(shape, v);
+}
+
+// Swap the last two dims of t
+Tensor swap_last(const Tensor& t) {
+	std::vector<size_t> perm(t.ndim());
+	for (size_t i = 0; i < perm.size(); i++) perm[i] = i;
+	std::swap(perm[perm.size() - 1], perm[perm.size() - 2]);
+	return t.transpose(perm);
+}
+
+// Check matmul(a, b, ta, tb) against matmul of explicitly transposed operands. a_shape
+// and b_shape are the shapes of op(A) and op(B); the stored operands are transposed back
+void check_flags(std::vector<size_t> a_shape, std::vector<size_t> b_shape) {
+	for (int f = 0; f < 4; f++) {
+		bool ta = f & 1, tb = f & 2;
+		Tensor a = ramp(a_shape, 0.1f), b = ramp(b_shape, 0.7f);
+		Tensor ref = matmul(a, b);
+		Tensor sa = ta ? swap_last(a) : a, sb = tb ? swap_last(b) : b;
+		Tensor got = matmul(sa, sb, ta, tb);
+		REQUIRE(got.shape() == ref.shape());
+		for (size_t i = 0; i < ref.size(); i++) {
+			CHECK(got.data()[i] == doctest::Approx(ref.data()[i]).epsilon(1e-4).scale(1.0));
+		}
+	}
+}
+
+}  // namespace
+
+TEST_CASE("matmul with transpose flags matches explicit transpose") {
+	check_flags({7, 33}, {33, 5});
+	check_flags({4, 7, 33}, {4, 33, 5});
+	check_flags({1, 7, 33}, {4, 33, 5});
+	check_flags({4, 7, 33}, {33, 5});
+}
+
+TEST_CASE("matmul with transpose flags shape errors") {
+	Tensor a({3, 4}), b({3, 5});
+	CHECK_THROWS_AS(matmul(a, b), TensorShapeError);
+	CHECK_THROWS_AS(matmul(a, b, false, false), TensorShapeError);
+	Tensor c = matmul(a, b, true, false);
+	CHECK(c.shape() == std::vector<size_t>{4, 5});
+	CHECK_THROWS_AS(matmul(a, b, false, true), TensorShapeError);
+	CHECK_THROWS_AS(matmul(Tensor({3}), b, false, false), TensorShapeError);
+	CHECK_THROWS_AS(matmul(Tensor({2, 3, 4}), Tensor({3, 4, 5}), false, false), TensorShapeError);
 }
 
 TEST_CASE("operator+ - * / match free functions") {

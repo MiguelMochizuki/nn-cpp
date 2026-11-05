@@ -22,9 +22,7 @@ Linear::Linear(size_t in_features, size_t out_features)
 	  bias_(Value::leaf(Tensor::zeros({out_features}), true)) {}
 
 Value Linear::forward(const Value& input) {
-	Value weight_t = transpose(weight_, {1, 0});
-	Value out = matmul(input, weight_t);
-	return add(out, bias_);
+	return add(matmul_bt(input, weight_), bias_);
 }
 
 std::vector<Value> Linear::parameters() const { return {weight_, bias_}; }

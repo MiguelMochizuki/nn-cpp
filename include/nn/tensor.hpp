@@ -375,6 +375,22 @@ Tensor scale(const Tensor& a, float scalar);
  */
 Tensor matmul(const Tensor& a, const Tensor& b);
 
+/* Public, batched matrix multiplication with optional transposition of the last two
+ * dimensions of each operand
+ *
+ * Parameters:
+ * Tensor a: left operand, shape {..., M, K} (or {..., K, M} when trans_a)
+ * Tensor b: right operand, shape {..., K, N} (or {..., N, K} when trans_b)
+ * bool trans_a: use the transpose of a's last two dimensions
+ * bool trans_b: use the transpose of b's last two dimensions
+ *
+ * Returns Tensor: shape {..., M, N}, where leading "..." dimensions broadcast between
+ * a and b; throws TensorShapeError if either operand has fewer than 2 dimensions, if
+ * the K dimensions differ after applying the flags, or if the leading dimensions don't
+ * broadcast. matmul(a, b) equals matmul(a, b, false, false)
+ */
+Tensor matmul(const Tensor& a, const Tensor& b, bool trans_a, bool trans_b);
+
 /* Public, elementwise addition operator, alias for add(a, b) */
 Tensor operator+(const Tensor& a, const Tensor& b);
 

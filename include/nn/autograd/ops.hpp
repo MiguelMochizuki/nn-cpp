@@ -97,6 +97,18 @@ Value reshape(const Value& x, std::vector<size_t> new_shape);
  */
 Value matmul(const Value& a, const Value& b);
 
+/* Public, differentiable matrix multiplication against a transposed right operand
+ *
+ * Parameters:
+ * Value a: left operand, shape {..., M, K}
+ * Value b: right operand, shape {..., N, K}
+ *
+ * Returns Value: a.data() matmul transpose(b.data()), shape {..., M, N}, without
+ * materializing the transpose; backward computes grad_a = grad_out matmul b,
+ * grad_b = transpose(grad_out) matmul a, each reduced over any broadcast batch dimensions
+ */
+Value matmul_bt(const Value& a, const Value& b);
+
 /* Public, differentiable rectified linear unit
  *
  * Parameters:
