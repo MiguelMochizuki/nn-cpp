@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -1030,4 +1031,62 @@ TEST_CASE("conv2d general path rejects bad arguments") {
 	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 0, 2), TensorShapeError);  // dilation 0
 	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 3, 2), TensorShapeError);  // effective kernel 7 > 5
 	CHECK_THROWS_AS(conv2d(x, w, b, 1, 0, 1, 0), TensorShapeError);  // groups 0
+}
+
+TEST_CASE("weighted cross_entropy_loss with unit weights and no smoothing equals the unweighted loss") {
+	Tensor lv = Tensor::random({7, 4}, -2.0f, 2.0f);
+	Tensor targets({7}, std::vector<float>{0, 1, 2, 3, 3, 1, 0});
+	Value a = Value::leaf(lv, true), b = Value::leaf(lv, true);
+	Value la = cross_entropy_loss(a, targets), lb = cross_entropy_loss(b, targets, Tensor({4}, 1.0f));
+	CHECK(lb.data().data()[0] == doctest::Approx(la.data().data()[0]).epsilon(1e-6));
+	la.backward(); lb.backward();
+	for (size_t i = 0; i < lv.size(); i++) CHECK(b.grad().data()[i] == doctest::Approx(a.grad().data()[i]).epsilon(1e-5));
+}
+
+TEST_CASE("weighted cross_entropy_loss matches a hand-computed value") {
+	// Uniform logits: every -log p is log 3, so the weighted mean is log 3 whatever the weights
+	Value logits = Value::leaf(Tensor({3, 3}, 0.0f), false);
+	Tensor targets({3}, std::vector<float>{0, 1, 2});
+	Tensor w({3}, std::vector<float>{1.0f, 2.0f, 0.5f});
+	CHECK(cross_entropy_loss(logits, targets, w).data().data()[0] == doctest::Approx(std::log(3.0f)));
+	// Non-uniform: sample losses l = {log(1+e^-1)+..., } computed directly
+	Value lg = Value::leaf(Tensor({3, 3}, std::vector<float>{1, 0, 0, 0, 2, 0, 0, 0, 3}), false);
+	float l0 = std::log(std::exp(1.0f) + 2.0f) - 1.0f;
+	float l1 = std::log(std::exp(2.0f) + 2.0f) - 2.0f;
+	float l2 = std::log(std::exp(3.0f) + 2.0f) - 3.0f;
+	float expect = (1.0f * l0 + 2.0f * l1 + 0.5f * l2) / 3.5f;
+	CHECK(cross_entropy_loss(lg, targets, w).data().data()[0] == doctest::Approx(expect).epsilon(1e-5));
+}
+
+TEST_CASE("cross_entropy_loss label smoothing on a two-class example") {
+	Value logits = Value::leaf(Tensor({1, 2}, std::vector<float>{2.0f, 0.0f}), false);
+	Tensor targets({1}, std::vector<float>{0});
+	float lse = std::log(std::exp(2.0f) + 1.0f);
+	float nll0 = lse - 2.0f, nll1 = lse;
+	float s = 0.2f;
+	float expect = (1.0f - s) * nll0 + s * 0.5f * (nll0 + nll1);
+	CHECK(cross_entropy_loss(logits, targets, Tensor({2}, 1.0f), s).data().data()[0] == doctest::Approx(expect).epsilon(1e-5));
+}
+
+TEST_CASE("weighted smoothed cross_entropy_loss gradcheck") {
+	for (size_t N : {size_t{1}, size_t{7}, size_t{33}}) {
+		Tensor targets({N});
+		for (size_t i = 0; i < N; i++) targets.data()[i] = static_cast<float>((i * 5) % 4);
+		Tensor w({4}, std::vector<float>{1.0f, 2.0f, 0.5f, 1.5f});
+		auto f = [targets, w](Value l) { return cross_entropy_loss(l, targets, w, 0.1f); };
+		Value x = Value::leaf(Tensor::random({N, 4}, -2.0f, 2.0f), true);
+		CHECK(gradcheck(f, x, 1e-3f, 0.05f));
+	}
+}
+
+TEST_CASE("weighted cross_entropy_loss rejects bad input") {
+	Value logits = Value::leaf(Tensor({2, 3}, 0.0f), false);
+	Tensor targets({2}, std::vector<float>{0, 1});
+	Tensor w({3}, 1.0f);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({2}, 1.0f)), TensorShapeError);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, w, 1.0f), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, w, -0.1f), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, Tensor({2}, std::vector<float>{0, 3}), w), std::invalid_argument);
+	// Both samples belong to zero-weight classes
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{0, 0, 1})), std::invalid_argument);
 }

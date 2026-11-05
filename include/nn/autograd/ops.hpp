@@ -256,6 +256,24 @@ Value avgpool2d(const Value& x, size_t kernel_size, size_t stride);
  */
 Value cross_entropy_loss(const Value& logits, const Tensor& targets);
 
+/* Public, differentiable class-weighted, label-smoothed cross entropy
+ *
+ * Parameters:
+ * Value logits: raw model output, shape {N, num_classes}
+ * Tensor targets: class index per sample stored as a float, shape {N}
+ * Tensor class_weights: per-class weight, shape {num_classes}; an empty tensor is not allowed
+ * (use the 2-argument overload for the unweighted loss)
+ * float label_smoothing: s in [0, 1), the share of the target mass spread uniformly over all classes
+ *
+ * Returns Value: scalar shape {1}, sum_n w[y_n] * l_n / sum_n w[y_n] with
+ * l_n = (1-s) * (-log p[y_n]) + s * mean_c(-log p[c]); backward is fused,
+ * w[y_n] / sum(w[y]) * (softmax - (1-s) * one_hot - s / num_classes). Throws TensorShapeError on a
+ * shape mismatch, std::invalid_argument on a target outside [0, num_classes), a label_smoothing
+ * outside [0, 1) or a zero total weight
+ */
+Value cross_entropy_loss(const Value& logits, const Tensor& targets, const Tensor& class_weights,
+	float label_smoothing = 0.0f);
+
 /* Public, differentiable mean squared error
  *
  * Parameters:

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace nn {
 
@@ -826,6 +827,67 @@ Value cross_entropy_loss(const Value& logits, const Tensor& targets) {
 		for (float& v : local_grad.data()) v *= grad_scale;
 		logits.grad() += local_grad;
 	});
+}
+
+Value cross_entropy_loss(const Value& logits, const Tensor& targets, const Tensor& class_weights,
+	float label_smoothing) {
+	const Tensor& logits_data = logits.data();
+	if (logits_data.ndim() != 2) throw TensorShapeError();
+	size_t N = logits_data.shape()[0];
+	size_t C = logits_data.shape()[1];
+	if (targets.ndim() != 1 || targets.size() != N) throw TensorShapeError();
+	if (class_weights.ndim() != 1 || class_weights.size() != C) throw TensorShapeError();
+	if (!(label_smoothing >= 0.0f && label_smoothing < 1.0f)) {
+		throw std::invalid_argument("cross_entropy_loss: label_smoothing must be in [0, 1)");
+	}
+	std::vector<size_t> target_idx(N);
+	double total_weight = 0.0;
+	for (size_t n = 0; n < N; n++) {
+		float t = std::round(targets.data()[n]);
+		if (!(t >= 0.0f && t < static_cast<float>(C))) {
+			throw std::invalid_argument("cross_entropy_loss: target out of range");
+		}
+		target_idx[n] = static_cast<size_t>(t);
+		total_weight += class_weights.data()[target_idx[n]];
+	}
+	if (!(total_weight > 0.0)) throw std::invalid_argument("cross_entropy_loss: total sample weight is zero");
+
+	Tensor softmax_val(logits_data.shape());
+	double total_loss = 0.0;
+	const float inv_c = 1.0f / static_cast<float>(C);
+	for (size_t n = 0; n < N; n++) {
+		const float* row = logits_data.data().data() + n * C;
+		float max_val = row[0];
+		for (size_t c = 1; c < C; c++) max_val = std::max(max_val, row[c]);
+		float sum_exp = 0.0f;
+		for (size_t c = 0; c < C; c++) sum_exp += std::exp(row[c] - max_val);
+		float log_sum_exp = std::log(sum_exp);
+		float mean_nll = 0.0f;
+		for (size_t c = 0; c < C; c++) {
+			float log_prob = row[c] - max_val - log_sum_exp;
+			softmax_val.data()[n * C + c] = std::exp(log_prob);
+			mean_nll -= log_prob * inv_c;
+		}
+		float nll = -(row[target_idx[n]] - max_val - log_sum_exp);
+		float l_n = (1.0f - label_smoothing) * nll + label_smoothing * mean_nll;
+		total_loss += static_cast<double>(class_weights.data()[target_idx[n]]) * l_n;
+	}
+	Tensor result({1}, static_cast<float>(total_loss / total_weight));
+	float inv_total = static_cast<float>(1.0 / total_weight);
+	return Value::node(std::move(result), {logits},
+		[logits, softmax_val, target_idx, class_weights, N, C, label_smoothing, inv_total](const Tensor& grad_out) {
+			if (!logits.requires_grad()) return;
+			Tensor local_grad = softmax_val;
+			float g = grad_out.data()[0] * inv_total;
+			for (size_t n = 0; n < N; n++) {
+				float scale = g * class_weights.data()[target_idx[n]];
+				float* row = local_grad.data().data() + n * C;
+				for (size_t c = 0; c < C; c++) row[c] -= label_smoothing / static_cast<float>(C);
+				row[target_idx[n]] -= 1.0f - label_smoothing;
+				for (size_t c = 0; c < C; c++) row[c] *= scale;
+			}
+			logits.grad() += local_grad;
+		});
 }
 
 Value mse_loss(const Value& predictions, const Value& targets) {
