@@ -1,82 +1,116 @@
 # Phase 1 results: blocked GEMM kernel and transpose-free matmul paths
 
-Verdict: **DROP as it stands, by the exit rule.** The native build improves enormously (cnn_mnist 2.17x, mlp_wide 3.60x), but the portable build (`NN_NATIVE=OFF`) is slower than the pre-change code on `mlp_wide` (0.70x and 0.74x in two pairs) and on `cnn_large`, `mlp_adam` and `infer_nograd_b256`. The rule requires the portable build to be no slower on `cnn_mnist` and `mlp_wide`; `mlp_wide` fails, so the phase does not ship. The README was not changed. The decision on whether to fix the portable kernel and re-measure, or to accept a portable regression, belongs to the author.
+Verdict: **SHIP.** Native (`-DNN_NATIVE=ON`) cnn_mnist is 2.17x and mlp_wide 3.52x faster than the pre-change code (bar: more than 5%). The portable build (`-DNN_NATIVE=OFF`) is faster on every guarded row (cnn_mnist 1.99x, mlp_wide 2.31x, mlp_adam 2.33x, cnn_large 1.76x, infer_nograd_b1 10.8x, infer_nograd_b256 1.15x). `ctest` passes in both build dirs (171/171), and so do `nn_tests` (4581 assertions) and `bench_tests` (39).
 
-Reference: commit b7856c8 (main). New: branch `perf/phase1-matmul` at e8b20a5. Both built Release; `ctest` passes in both new build dirs (171/171 native, 171/171 portable).
+Reference: commit b7856c8 (main). New: branch `perf/phase1-matmul` at a340e2c (after the zero-initialisation fix for the edge-tile buffers). Both built Release.
+
+## History
+
+The first measurement (commit d8804a6) recorded DROP: the native build gained 2.17x / 3.60x, but the portable build used the scalar kernel and was slower than the old loop (mlp_wide 0.70x, cnn_large 0.86x, mlp_adam 0.70x, infer_nograd_b256 0.65x). Task 6 added an SSE2 microkernel (commit 5a66d52) used when AVX2/FMA is absent on x86-64. This document is the final measurement with that kernel and replaces the earlier one.
+
+## What shipped
+
+- `include/nn/kernels/gemm.hpp`, `src/kernels/gemm.cpp`: cache-blocked, packed, single-threaded `sgemm` with transpose flags. Microkernels: AVX2/FMA (only with `-DNN_NATIVE=ON`), SSE2 (plain x86-64), scalar (other targets).
+- `Tensor::matmul` routes through `sgemm`; new op `matmul_bt`; Linear and conv2d backward use the transpose flags instead of copies.
 
 ## Method
 
-Machine: i5-12450HX, `powersave` governor, no sudo. Headline protocol `NN_NUM_THREADS=8 taskset -c 0-7 apps/bench --out <csv> --label pinned`, default runs and warm-up (15 runs per row). Native: old/new alternated three times (old1, new1, old2, new2, old3, new3). Portable: one old/new pair, plus a second pair afterwards as a check on the surprise. Load average was 0.9 to 1.2 throughout (one bench thread is itself about 1.0); firefox idle at about 5% CPU, gnome-shell about 7%. CSVs are in `docs/baseline/phase1/` (`{old,new}-{native,portable}-run<k>.csv`).
+Machine: i5-12450HX, cpus 0-7 are the P-core threads, `powersave` governor, no sudo. Protocol: `NN_NUM_THREADS=8 taskset -c 0-7 apps/bench --out <csv> --label pinned`, 15 runs per row. Old and new alternated three times each (old1, new1, old2, new2, old3, new3), native first, then portable, one bench at a time. Before the runs: load average 1.35 right after the builds (1 min), gnome-shell 5.9%, claude 4.3%, ptyxis 2.1%. CSVs: `docs/baseline/phase1/{old,new}-{native,portable}-run<k>.csv`. Tables use the median of three per side. Ratio = old/new total_ms (matmul: new/old GFLOP/s), above 1 is faster. "noise" below is the larger median spread of the two sides.
 
-Old-vs-old stability (stop condition was a 10% pairwise difference): `cnn_mnist` total_ms 17.428, 17.418, 17.425; `mlp_wide` 170.686, 170.412, 169.883. Spread under 0.5%, the condition was not triggered. New native: `cnn_mnist` 7.983, 8.050, 8.029; `mlp_wide` 47.277, 47.443, 47.338.
+### Old-vs-old stability and the outlier
 
-## Native (medians of three) vs old
+The stop gate was 10% pairwise between old runs on cnn_mnist or mlp_wide total_ms.
 
-Ratio = old / new, > 1 is faster. Times in ms, median of three runs per side.
+| set | runs (ms) | max/min |
+|---|---|---|
+| old native cnn_mnist | 17.491, 17.481, 17.850 | +2.1% |
+| old native mlp_wide | 167.153, 167.578, **184.366** | **+10.3%** |
+| old portable cnn_mnist | 18.209, 18.348, 17.890 | +2.6% |
+| old portable mlp_wide | 201.502, 206.282, 194.437 | +6.1% |
+| new native cnn_mnist | 8.023, 8.581, 8.055 | +6.9% |
+| new native mlp_wide | 47.614, 48.321, 47.451 | +1.8% |
+| new portable cnn_mnist | 9.151, 9.153, 9.530 | +4.1% |
+| new portable mlp_wide | 87.087, 86.943, 90.079 | +3.6% |
 
-| row | old fwd | old bwd | old total | new fwd | new bwd | new total | speedup |
-|---|---|---|---|---|---|---|---|
-| xor | 0.0053 | 0.0076 | 0.0132 | 0.0040 | 0.0041 | 0.0084 | 1.58x |
-| mlp_wide | 66.31 | 103.57 | 170.41 | 20.41 | 25.48 | 47.34 | 3.60x |
-| cnn_mnist | 3.47 | 13.87 | 17.43 | 4.35 | 3.62 | 8.03 | 2.17x |
-| cnn_large | 327.6 | 678.7 | 1006.0 | 273.5 | 221.8 | 495.2 | 2.03x |
-| mlp_adam | 56.92 | 89.60 | 151.71 | 17.77 | 21.05 | 44.03 | 3.45x |
-| infer_nograd_b1 | 1.130 | 0 | 1.130 | 0.081 | 0 | 0.081 | 14.0x |
-| infer_nograd_b256 | 25.61 | 0 | 25.61 | 22.14 | 0 | 22.14 | 1.16x |
+Old native mlp_wide run3 exceeded the 10% gate by 0.3 points, on one run. The controller ruled to accept the median of three and continue. The median (167.578) is unaffected by the outlier, and the measured effects (2x to 3.5x) are far above the 5% bar, so no observed noise level changes the verdict.
 
-Forward vs backward split speedups (old/new): mlp_wide forward 3.25x, backward 4.06x; mlp_adam forward 3.20x, backward 4.26x; cnn_large forward 1.20x, backward 3.06x; cnn_mnist forward **0.80x (slower)**, backward 3.84x. Backward gained more everywhere because it lost the transpose copies (the Phase 0 profile put 20% of cnn_mnist in `Tensor::transpose`) on top of the faster kernel. The shift is visible in the share: cnn_mnist is now 54% forward / 45% backward, versus 20% / 80% before.
+## Native (medians of three)
 
-Matmul sweep (square n x n, GFLOP/s; estimated single-core peak about 140, an estimate and not a measurement):
+Times in ms. fwd/bwd/opt are the forward, backward and optimizer parts.
 
-| n | old | new | speedup | new % of 140 |
+| row | old fwd/bwd/opt | new fwd/bwd/opt | old total | new total | speedup | noise |
+|---|---|---|---|---|---|---|
+| xor | 0.005/0.007/0.000 | 0.004/0.004/0.000 | 0.012 | 0.009 | 1.31x | 0.126 (within noise) |
+| mlp_wide | 65.600/100.161/1.515 | 20.480/25.555/1.462 | 167.578 | 47.614 | 3.52x | 0.008 |
+| mlp_adam | 62.938/99.109/5.146 | 18.334/21.350/5.200 | 167.255 | 45.597 | 3.67x | 0.011 |
+| cnn_mnist | 3.518/13.908/0.054 | 4.358/3.613/0.060 | 17.491 | 8.055 | 2.17x | 0.310 |
+| cnn_large | 328.039/681.874/0.120 | 274.651/224.944/0.139 | 1010.310 | 501.187 | 2.02x | 0.032 |
+| infer_nograd_b1 | 1.123/0/0 | 0.082/0/0 | 1.123 | 0.082 | 13.72x | 0.012 |
+| infer_nograd_b256 | 25.560/0/0 | 21.924/0/0 | 25.560 | 21.924 | 1.17x | 0.013 |
+
+Matmul sweep (square n x n, GFLOP/s; the single-core peak of about 140 is an estimate, not a measurement):
+
+| n | old | new | speedup | new % of 140 | noise |
+|---|---|---|---|---|---|
+| 8 | 7.0 | 4.6 | 0.66x | 3% | 0.130 (within noise) |
+| 16 | 14.9 | 26.0 | 1.75x | 19% | 0.055 |
+| 32 | 23.3 | 49.2 | 2.11x | 35% | 0.045 |
+| 64 | 42.7 | 69.7 | 1.63x | 50% | 0.015 |
+| 128 | 34.7 | 96.8 | 2.79x | 69% | 0.004 |
+| 256 | 38.2 | 107.7 | 2.82x | 77% | 0.008 |
+| 512 | 30.6 | 106.4 | 3.47x | 76% | 0.013 |
+| 1024 | 24.5 | 104.2 | 4.26x | 74% | 0.012 |
+| 2048 | 14.5 | 104.6 | 7.22x | 75% | 0.020 |
+
+matmul/8: an 8x8 product is too small for packing to pay off, and no workload uses it.
+
+## Portable (medians of three)
+
+| row | old fwd/bwd/opt | new fwd/bwd/opt | old total | new total | speedup | noise |
+|---|---|---|---|---|---|---|
+| xor | 0.005/0.007/0.000 | 0.004/0.004/0.000 | 0.012 | 0.009 | 1.38x | 0.062 |
+| mlp_wide | 79.364/120.000/1.553 | 35.672/49.915/1.526 | 201.502 | 87.087 | 2.31x | 0.008 |
+| mlp_adam | 74.890/115.937/5.148 | 32.980/45.858/5.150 | 195.897 | 84.034 | 2.33x | 0.015 |
+| cnn_mnist | 3.825/14.280/0.052 | 4.681/4.443/0.059 | 18.209 | 9.153 | 1.99x | 0.258 |
+| cnn_large | 376.033/746.214/0.116 | 320.868/316.194/0.132 | 1123.370 | 637.286 | 1.76x | 0.006 |
+| infer_nograd_b1 | 1.163/0/0 | 0.108/0/0 | 1.163 | 0.108 | 10.80x | 0.009 |
+| infer_nograd_b256 | 28.479/0/0 | 24.816/0/0 | 28.479 | 24.816 | 1.15x | 0.012 |
+
+Worst guarded portable row: infer_nograd_b256 at 1.15x (faster).
+
+| n | old GFLOP/s | new GFLOP/s | speedup | noise |
 |---|---|---|---|---|
-| 8 | 6.7 | 6.1 | 0.91x (within noise) | 4% |
-| 16 | 17.9 | 35.0 | 1.95x | 25% |
-| 32 | 25.4 | 63.0 | 2.48x | 45% |
-| 64 | 36.4 | 81.4 | 2.23x | 58% |
-| 128 | 35.0 | 99.2 | 2.83x | 71% |
-| 256 | 38.2 | 107.5 | 2.81x | 77% |
-| 512 | 36.3 | 106.5 | 2.93x | 76% |
-| 1024 | 29.9 | 106.1 | 3.55x | 76% |
-| 2048 | 13.9 | 102.1 | 7.33x | 73% |
+| 8 | 6.1 | 4.6 | 0.74x | 0.130 (within noise) |
+| 16 | 11.3 | 16.4 | 1.45x | 0.055 |
+| 32 | 15.7 | 22.6 | 1.43x | 0.010 |
+| 64 | 23.8 | 33.9 | 1.43x | 0.046 |
+| 128 | 23.6 | 36.5 | 1.55x | 0.007 |
+| 256 | 22.8 | 38.6 | 1.69x | 0.016 |
+| 512 | 21.3 | 38.9 | 1.83x | 0.005 |
+| 1024 | 19.5 | 39.0 | 2.00x | 0.007 |
+| 2048 | 10.6 | 38.3 | 3.60x | 0.005 |
 
-Per-row spreads are in the CSVs; every ratio above except matmul/8 is outside the larger of the two spreads (compare_csv.py flags only matmul/8 as within noise). The cnn_mnist "spread" value of the new runs (0.05) is high relative to the 2.17x effect but far from it.
+matmul/8: same note as native, an 8x8 product is too small for packing to pay off and no workload uses it.
 
-## Portable (single pair, then a second pair) vs old
+## Exit rule
 
-| row | old total | new total | ratio, pair 1 | ratio, pair 2 |
-|---|---|---|---|---|
-| xor | 0.0116 | 0.0094 | 1.24x | 1.27x |
-| mlp_wide | 193.1 | 274.2 | **0.70x** | **0.74x** |
-| cnn_mnist | 17.96 | 15.79 | 1.14x | 1.16x |
-| cnn_large | 1104.5 | 1287.8 | **0.86x** | **0.84x** |
-| mlp_adam | 189.2 | 271.8 | **0.70x** | **0.70x** |
-| infer_nograd_b1 | 1.121 | 0.252 | 4.46x | 4.46x |
-| infer_nograd_b256 | 27.60 | 42.74 | **0.65x** | **0.64x** |
+- Native cnn_mnist (2.17x) and mlp_wide (3.52x) each improve by more than 5%: pass.
+- Portable not slower on cnn_mnist, mlp_wide, mlp_adam, cnn_large, infer_nograd_b1, infer_nograd_b256: pass (1.15x to 10.8x faster).
+- ctest in both build dirs: pass (171/171 each).
 
-Portable matmul GFLOP/s, old to new: n=8 6.2 to 2.5, n=16 11.4 to 7.8, n=32 19.3 to 8.6, n=64 23.8 to 9.4, n=128 23.7 to 9.6, n=256 22.9 to 9.9, n=512 21.2 to 9.9, n=1024 20.6 to 9.9, n=2048 11.1 to 9.8 (ratios 0.38x to 0.89x; the large-size ratio is only near 0.9x because the old code collapsed at 2048). Both pairs agree within 5%, so this is a real regression, not noise. The portable scalar sgemm (about 10 GFLOP/s) is roughly half as fast as the old triple loop (20 to 24 GFLOP/s) at mid sizes. The old loop's inner access pattern was presumably vectorised by the compiler (SSE2 baseline), which the packed scalar kernel does not match; this is a hypothesis from the numbers, not something profiled here. cnn_mnist and the small shapes still gain in portable because the transpose copies are gone from backward (cnn_mnist backward 14.1 to 8.8 ms, forward 3.76 to 6.93 ms).
+## Real MNIST (`taskset -c 0-7 train_mnist data/mnist`, unseeded, tolerance 98.0%)
 
-## Exit-rule check
+| build | test accuracy | wall time | Phase 0 (accuracy, wall) |
+|---|---|---|---|
+| native | 98.25% | 0:38.79 | 98.11%, 1:42.46 |
+| portable | 98.43% | 0:46.31 | 98.47%, 1:47.72 |
 
-| condition | result |
-|---|---|
-| native cnn_mnist total improves by more than 5% | pass, 2.17x |
-| native mlp_wide total improves by more than 5% | pass, 3.60x |
-| portable not slower on cnn_mnist | pass, 1.14x and 1.16x |
-| portable not slower on mlp_wide | **fail, 0.70x and 0.74x** |
-| ctest passes in build/native and build/portable | pass, 171/171 each |
+Raw output in `docs/baseline/phase1/mnist-{native,portable}.txt`. The native wall time is longer than the earlier Phase 1 run (0:33.13); the machine was busier at that point (load average 2.2 at start), so treat it as noisy.
 
-## Real-data check (native)
+## Known caveats
 
-`taskset -c 0-7 build/native/apps/train_mnist data/mnist`: test accuracy 98.37% (9837/10000), at or above the 98.0% bar (Phase 0: 98.11% native, 98.47% portable; the program is unseeded). Wall time 0:33.13 versus 1:42.46 in Phase 0 (3.1x). Raw output: `docs/baseline/phase1/mnist-native.txt`. Accuracy for the portable build was not re-measured.
-
-## Surprises
-
-- cnn_mnist forward is 20% slower in the native build (3.47 to 4.35 ms), while the whole step is 2.17x faster. Likely the small-shape conv forward path (im2col plus a small matmul) pays packing overhead the old loop did not; not profiled. cnn_large forward gains only 1.20x for the same reason.
-- infer_nograd_b1 at 14x (1.13 to 0.081 ms) is mostly the tiny-m matmul now skipping a transpose copy of the weight; take it as a real but workload-specific gain.
-- matmul/8 and the xor row are microsecond-scale; xor's 1.58x is not trustworthy beyond "not slower".
-- infer_nograd_b256 gains only 1.16x natively: forward-only inference of this model is limited by something other than the matmul (not investigated).
-
-## Next
-
-A fresh `perf` profile belongs at the start of Phase 2; no new profile ranking was taken here. For this phase the open question is the portable scalar kernel (blocking/packing overhead at about 10 GFLOP/s against the old 20 to 24), which decides whether it can pass the guard.
+- **cnn_mnist forward is slower than before** (about 4.3 ms vs 3.5 ms native, 4.7 vs 3.8 portable). This is not GEMM: the forward matmuls take about 0.5 ms of it. It comes from glibc heap trim and regrow (minor page faults roughly 28k to 54k per `perf stat`); with `GLIBC_TUNABLES` pinning the allocator, the new forward was about 2.1 ms vs 3.6 ms old. A later allocation-reuse phase should address it. Backward more than compensates (13.9 to 3.6 ms), so the total is still 2.17x.
+- **Non-x86 targets** still use the scalar microkernel (about 10 GFLOP/s), which is slower than the old loop (20 to 24). They are not covered by this guard (a NEON kernel would be the fix).
+- `micro_sse2` is compiled only when AVX2/FMA is absent, so the native build's tests do not run it, and vice versa; each is exercised by its own build's `ctest`.
+- cnn_mnist per-run spread is high (0.26 to 0.31) in all sets; xor (microseconds) is noise.
+- A fresh `perf` profile belongs at the start of Phase 2.
