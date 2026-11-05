@@ -32,8 +32,27 @@ public:
 	 */
 	SGD(std::vector<Value> params, float lr, float momentum = 0.0f);
 
+	/* Public, apply one update to every parameter from its current grad, updating velocity_ when momentum is on
+	 *
+	 * Parameters: none
+	 *
+	 * Returns void: none
+	 */
 	void step() override;
+	/* Public, snapshot the momentum buffers for checkpointing
+	 *
+	 * Parameters: none
+	 *
+	 * Returns OptimizerState: named tensors that load_state() accepts
+	 */
 	OptimizerState state() const override;
+	/* Public, restore a snapshot produced by state(); all-or-nothing
+	 *
+	 * Parameters:
+	 * OptimizerState state: snapshot to restore
+	 *
+	 * Returns void: none; throws std::runtime_error and leaves this optimizer unchanged on a name or shape mismatch
+	 */
 	void load_state(const OptimizerState& state) override;
 
 private:

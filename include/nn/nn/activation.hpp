@@ -17,6 +17,13 @@ namespace nn {
  */
 class ReLU : public Module {
 public:
+	/* Public, apply ReLU elementwise: max(x, 0)
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: activation output, same shape as input
+	 */
 	Value forward(const Value& input) override;
 };
 
@@ -27,6 +34,13 @@ public:
  */
 class Sigmoid : public Module {
 public:
+	/* Public, apply the logistic sigmoid elementwise
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: activation output, same shape as input
+	 */
 	Value forward(const Value& input) override;
 };
 
@@ -37,6 +51,13 @@ public:
  */
 class Tanh : public Module {
 public:
+	/* Public, apply tanh elementwise
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: activation output, same shape as input
+	 */
 	Value forward(const Value& input) override;
 };
 
@@ -57,6 +78,13 @@ public:
 	 */
 	explicit Softmax(int axis);
 
+	/* Public, apply softmax along the configured axis
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: activation output, same shape as input
+	 */
 	Value forward(const Value& input) override;
 
 private:

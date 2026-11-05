@@ -16,6 +16,15 @@ using namespace nn;
 
 namespace {
 
+/**
+ * Writes a 32-bit unsigned integer in big-endian byte order, as IDX headers store it
+ *
+ * Parameters:
+ * std::ofstream& file: Open binary output stream
+ * uint32_t v: Value to write
+ *
+ * Returns void
+ */
 void write_u32_be(std::ofstream& file, uint32_t v) {
 	unsigned char bytes[4] = {
 		static_cast<unsigned char>((v >> 24) & 0xFF),
@@ -26,6 +35,14 @@ void write_u32_be(std::ofstream& file, uint32_t v) {
 	file.write(reinterpret_cast<char*>(bytes), 4);
 }
 
+/**
+ * Writes a 2-image, 2x2 IDX3 file with pixel values 1..8
+ *
+ * Parameters:
+ * const std::string& path: Destination file
+ *
+ * Returns void
+ */
 void write_images_fixture(const std::string& path) {
 	std::ofstream file(path, std::ios::binary);
 	unsigned char magic[4] = {0x00, 0x00, 0x08, 0x03};
@@ -42,6 +59,14 @@ void write_images_fixture(const std::string& path) {
 	file.write(reinterpret_cast<char*>(pixels), 8);
 }
 
+/**
+ * Writes a 2-label IDX1 file holding labels 0 and 1
+ *
+ * Parameters:
+ * const std::string& path: Destination file
+ *
+ * Returns void
+ */
 void write_labels_fixture(const std::string& path) {
 	std::ofstream file(path, std::ios::binary);
 	unsigned char magic[4] = {0x00, 0x00, 0x08, 0x01};

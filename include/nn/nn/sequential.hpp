@@ -30,8 +30,27 @@ public:
 	 */
 	void add(std::unique_ptr<Module> layer);
 
+	/* Public, feed input through every layer in order
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: output of the last layer; input unchanged if the sequence is empty
+	 */
 	Value forward(const Value& input) override;
+	/* Public, list the trainable parameters
+	 *
+	 * Parameters: none
+	 *
+	 * Returns vector<Value>: the parameters, in the same order as named_parameters()
+	 */
 	std::vector<Value> parameters() const override;
+	/* Public, list the trainable parameters with stable names
+	 *
+	 * Parameters: none
+	 *
+	 * Returns vector<pair<string, Value>>: (name, handle) pairs, in the same order as parameters()
+	 */
 	std::vector<std::pair<std::string, Value>> named_parameters() const override;
 
 private:
