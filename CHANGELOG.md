@@ -21,13 +21,13 @@ Adds what is needed to train a small CNN with regularisation on real image data 
 ### Changed
 
 - The `DataLoader` shuffle order differs from 1.0.0. The shuffle is now a portable Fisher-Yates, so the same seed gives the same order on every platform.
-- Checkpoints may now contain module buffers after the parameters, and always store the optimizer's learning rate as `optim.lr`. Files written by 1.0.0 still load; a file without buffers cannot be loaded into a model that has buffers (`std::runtime_error`).
+- Checkpoints may now contain module buffers after the parameters. Files written by 1.0.0 still load; a file without buffers cannot be loaded into a model that has buffers (`std::runtime_error`). `load_state` of `SGD` and `Adam` now also accepts a snapshot without `lr` and keeps the current learning rate, where 1.0.0 rejected it as missing.
 - Elementwise ops with broadcasting (add, sub, mul, div) are faster and run in parallel; results are unchanged.
-- A non-leaf `Value::grad()` is an empty placeholder until `backward()` reaches it (already the case since 1.0.0); use `has_grad()` to test.
+- A non-leaf `Value::grad()` is now an empty placeholder (shape `{0}`) until `backward()` reaches it; in 1.0.x it was a zero tensor shaped like the data. Use `has_grad()` to test whether the gradient has been computed.
 
 ### Fixed
 
-- `Value::backward()` ordered nodes wrongly when a node was reached by paths of different depth, which gave wrong gradients for shared subgraphs (a value used by several consumers). Also released as 1.0.1.
+- `Value::backward()` ordered nodes wrongly when a node was reached by paths of different depth, which gave wrong gradients for shared subgraphs (a value used by several consumers). Version 1.0.1 has the same fix, and 1.1.0 contains it.
 
 ### Notes
 
@@ -35,7 +35,14 @@ Adds what is needed to train a small CNN with regularisation on real image data 
 - `Dropout`'s random stream is not saved in checkpoints, so the masks of a resumed run differ from an uninterrupted one.
 - Schedulers are not saved in checkpoints; restore one with `set_step`.
 - MSVC on x86 still uses the unpacked `sgemm`.
-- BatchNorm networks are slow for now: the elementwise ops are serial, and `cnn_fer` does not scale with threads (`docs/v1.1.0-results.md`).
+- `Module` gained `train`, `eval`, `is_training`, `training_` and `named_buffers`; user subclasses that already define members with these names will hide or override them. `Optimizer::lr()` and `set_lr()` throw `std::logic_error` for custom optimizers that do not override them, so a scheduler needs an optimizer that implements them.
+- Elementwise ops now run in parallel and `cnn_fer` goes from 716 ms to 165 ms per step at 8 threads (`docs/v1.1.0-results.md`); the remaining serial work is reductions, memset and malloc.
+
+## [1.0.1] - 2026-11-05
+
+### Fixed
+
+- `Value::backward()` computed wrong gradients when a node was consumed along paths of different depth (for example `c` feeding both `mul(c, mul(c, c))` and the final op directly). The traversal ordered such a node before some of its consumers, so it passed its gradient on before all of it had arrived. This affects any model with shared subgraphs, such as residual connections. Gradients of models without such sharing, including the bundled MLP and CNN examples, were correct. Upgrading is recommended for anyone training models with shared subgraphs.
 
 ## [1.0.0] - 2026-11-05
 
