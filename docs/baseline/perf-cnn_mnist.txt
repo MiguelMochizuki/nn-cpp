@@ -1,0 +1,25 @@
+    40.88%  bench    bench                 [.] nn::matmul(nn::Tensor const&, nn::Tensor const&)
+    20.49%  bench    bench                 [.] nn::Tensor::transpose(std::vector<unsigned long, std::allocator<unsigned long> >) const
+     5.33%  bench    libc.so.6             [.] __memset_avx2_unaligned_erms
+     4.12%  bench    libc.so.6             [.] malloc
+     4.00%  bench    libc.so.6             [.] cfree@GLIBC_2.2.5
+     3.53%  bench    bench                 [.] std::_Function_handler<void (nn::Tensor const&), nn::relu(nn::Value const&)::{lambda(nn::Tensor const&)#1}>::_M_invoke(std::_Any_data const&, nn::Tensor const&)
+     2.67%  bench    libc.so.6             [.] __memmove_avx_unaligned_erms
+     2.61%  bench    libstdc++.so.6.0.35   [.] operator new(unsigned long)
+     1.88%  bench    bench                 [.] nn::conv2d(nn::Value const&, nn::Value const&, nn::Value const&, int, int)
+     1.69%  bench    bench                 [.] nn::conv2d(nn::Value const&, nn::Value const&, nn::Value const&, int, int)::{lambda(nn::Tensor const&)#1}::operator()(nn::Tensor const&) const
+     0.85%  bench    bench                 [.] nn::Tensor::operator+=(nn::Tensor const&)
+     0.85%  bench    bench                 [.] memset@plt
+     0.84%  bench    libstdc++.so.6.0.35   [.] free@plt
+     0.84%  bench    libstdc++.so.6.0.35   [.] operator delete(void*)
+     0.70%  bench    bench                 [.] operator new(unsigned long)@plt
+     0.64%  bench    libstdc++.so.6.0.35   [.] operator delete(void*)@plt
+     0.56%  bench    bench                 [.] nn::maxpool2d(nn::Value const&, unsigned long, unsigned long)
+     0.55%  bench    bench                 [.] nn::Tensor::size() const
+     0.53%  bench    [unknown]             [k] 0xffffffff93b35a8e
+     0.47%  bench    bench                 [.] operator delete(void*, unsigned long)@plt
+     0.45%  bench    bench                 [.] nn::Tensor::data()
+     0.44%  bench    libstdc++.so.6.0.35   [.] operator delete(void*, unsigned long)
+     0.41%  bench    bench                 [.] nn::Tensor::Tensor(std::vector<unsigned long, std::allocator<unsigned long> >, float)
+     0.36%  bench    [unknown]             [k] 0xffffffff93b4cca3
+     0.35%  bench    bench                 [.] nn::Tensor::sum(int) const
