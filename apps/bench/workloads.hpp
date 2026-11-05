@@ -65,7 +65,7 @@ void reseed_parameters(nn::Module& model, unsigned seed);
  *
  * Parameters: none
  *
- * Returns vector<string>: xor, mlp_wide, cnn_mnist, cnn_large, mlp_adam
+ * Returns vector<string>: xor, mlp_wide, cnn_mnist, cnn_large, mlp_adam, cnn_fer
  */
 std::vector<std::string> workload_names();
 

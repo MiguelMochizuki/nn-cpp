@@ -7,11 +7,13 @@
 #include "workloads.hpp"
 
 #include "nn/nn/activation.hpp"
+#include "nn/nn/batchnorm.hpp"
 #include "nn/nn/conv2d.hpp"
 #include "nn/nn/flatten.hpp"
 #include "nn/nn/linear.hpp"
 #include "nn/nn/pool2d.hpp"
 #include "nn/optim/adam.hpp"
+#include "nn/optim/adamw.hpp"
 #include "nn/optim/sgd.hpp"
 
 #include <cmath>
@@ -38,7 +40,7 @@ void reseed_parameters(Module& model, unsigned seed) {
 }
 
 std::vector<std::string> workload_names() {
-	return {"xor", "mlp_wide", "cnn_mnist", "cnn_large", "mlp_adam"};
+	return {"xor", "mlp_wide", "cnn_mnist", "cnn_large", "mlp_adam", "cnn_fer"};
 }
 
 /**
@@ -116,6 +118,23 @@ Workload make_workload(const std::string& name, unsigned seed) {
 		w.optimizer = std::make_shared<SGD>(w.model->parameters(), 0.05f);
 		w.classification = true;
 		xshape = {64, 3, 64, 64};
+	} else if (name == "cnn_fer") {
+		// FER-2013-shaped: Conv-BN-ReLU stacks, global average pooling and a 7-class head
+		w.model = std::make_shared<Sequential>();
+		size_t in = 1;
+		for (size_t c : {16, 32, 64}) {
+			w.model->add(std::make_unique<Conv2d>(in, c, 3, 1, 1));
+			w.model->add(std::make_unique<BatchNorm2d>(c));
+			w.model->add(std::make_unique<ReLU>());
+			if (c != 64) w.model->add(std::make_unique<MaxPool2d>(2, 2));
+			in = c;
+		}
+		w.model->add(std::make_unique<GlobalAvgPool2d>());
+		w.model->add(std::make_unique<Linear>(64, 7));
+		w.optimizer = std::make_shared<AdamW>(w.model->parameters(), 1e-3f);
+		w.classification = true;
+		xshape = {64, 1, 48, 48};
+		out = 7;
 	} else {
 		throw std::invalid_argument("unknown workload: " + name);
 	}

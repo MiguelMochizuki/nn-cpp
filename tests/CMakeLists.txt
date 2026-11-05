@@ -8,6 +8,7 @@ add_executable(nn_tests
 	test_checkpoint.cpp
 	test_kernels.cpp
 	test_parallel.cpp
+	test_training_e2e.cpp
 )
 target_link_libraries(nn_tests PRIVATE nn_core doctest::doctest)
 
