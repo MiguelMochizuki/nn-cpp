@@ -1,0 +1,17 @@
+config,label,threads,benchmark,size,forward_ms,backward_ms,optim_ms,total_ms,gflops,spread,runs
+native,pinned,8,xor,,0.005349,0.007592,0.000184,0.013213,,0.200674,15
+native,pinned,8,mlp_wide,,64.5518,103.567,1.58405,169.883,,0.0445229,15
+native,pinned,8,cnn_mnist,,3.47176,13.8279,0.053936,17.4252,,0.00787235,15
+native,pinned,8,cnn_large,,327.339,678.702,0.124728,1005.63,,0.00294043,15
+native,pinned,8,mlp_adam,,56.9181,89.4749,5.14515,151.593,,0.00490955,15
+native,pinned,8,infer_nograd_b1,,1.12583,0,0,1.12583,,0.0130797,15
+native,pinned,8,infer_nograd_b256,,25.6095,0,0,25.6095,,0.0154099,15
+native,pinned,8,matmul,8,,,,0.000148,6.91892,0.0472973,15
+native,pinned,8,matmul,16,,,,0.000457,17.9256,0.00984683,15
+native,pinned,8,matmul,32,,,,0.002589,25.3132,0.00502124,15
+native,pinned,8,matmul,64,,,,0.014388,36.4393,0.00229358,15
+native,pinned,8,matmul,128,,,,0.119754,35.0243,0.000977003,15
+native,pinned,8,matmul,256,,,,0.877464,38.2402,0.000829094,15
+native,pinned,8,matmul,512,,,,7.38179,36.3645,0.00163619,15
+native,pinned,8,matmul,1024,,,,71.897,29.8689,0.00552909,15
+native,pinned,8,matmul,2048,,,,1235.58,13.9043,0.00208154,15
