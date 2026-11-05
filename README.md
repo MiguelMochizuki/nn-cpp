@@ -23,10 +23,11 @@ apps/
   mnist/          IDX parser, MnistDataset, train_mnist and its tests
   xor/            xor_demo
   CMakeLists.txt
-cmake/            FetchDoctest.cmake (fetches doctest for the tests)
+cmake/            FetchDoctest.cmake (fetches doctest for the tests), nn_cppConfig.cmake.in (package config)
 docs/
   baseline/       recorded benchmark CSVs, perf profiles and MNIST runs: top level = Phase 0 baseline,
                   phase1/ to phase3/ and followups/ = later runs
+  releasing.md    steps to cut a release
   phase0-results.md ... phase3-results.md, followups-results.md   per-phase measurements
 include/nn/
   autograd/       Value and the differentiable operations
@@ -39,7 +40,7 @@ include/nn/
   checkpoint.hpp  save and load of weights and optimizer state
 src/              implementations, mirroring include/nn
 tests/            doctest unit tests, gradcheck.hpp (gradient check) and reference_gemm.hpp (naive GEMM oracle)
-CMakeLists.txt, CONTRIBUTING.md, LICENSE
+CMakeLists.txt, CHANGELOG.md, CONTRIBUTING.md, LICENSE
 ```
 
 ## Main Tools & Stack
@@ -92,11 +93,26 @@ cmake --build build -j
 
 This builds the `nn_core` static library, the example apps, and the test suite (`ctest`/[doctest](https://github.com/doctest/doctest), fetched automatically). Tests can be skipped with `-DNN_BUILD_TESTS=OFF`; examples with `-DNN_BUILD_APPS=OFF`. `-DNN_NATIVE=ON` builds for the host CPU, which on a CPU with AVX2 and FMA enables the AVX2/FMA GEMM microkernel. The elementwise ops, ReLU, im2col, col2im and max-pooling run on a thread pool on every target, and on x86-64 matrix products do too; the thread count defaults to `std::thread::hardware_concurrency()` and can be set with the `NN_NUM_THREADS` environment variable or `nn::kernels::set_num_threads(n)`. Results do not depend on the thread count.
 
+On MSVC the compiler defines neither `__SSE2__` nor `__AVX2__`/`__FMA__`, so x86 MSVC builds use the unpacked `sgemm`: correct, but slower than the GCC/Clang builds.
+
 Run the tests:
 
 ```bash
 ctest --test-dir build --output-on-failure
 ```
+
+## Releases and versioning
+
+Versions follow [Semantic Versioning](https://semver.org/): a breaking API change bumps the major version, a new feature the minor version, and a fix the patch version. The changes of each version are in [CHANGELOG.md](CHANGELOG.md).
+
+Each release is on the GitHub Releases page with packages for Linux (x86-64, ARM64), Windows (x86-64, ARM64) and macOS (universal), named `nn-cpp-<version>-<os>-<arch>.tar.gz` (`.zip` on Windows), plus a source archive. A package holds the static library, the headers and the apps (`bin/`), laid out as a CMake install prefix. To use it from another project, point `CMAKE_PREFIX_PATH` at the unpacked package (or at an install prefix from `cmake --install build --prefix <dir>`):
+
+```cmake
+find_package(nn_cpp 1.0 REQUIRED)
+target_link_libraries(my_app PRIVATE nn::core)
+```
+
+`nn::core` carries the include path and the `Threads` dependency. The steps to cut a release are in [docs/releasing.md](docs/releasing.md).
 
 ## Usage
 

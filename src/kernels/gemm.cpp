@@ -8,7 +8,6 @@
 #include "nn/kernels/parallel.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <new>
 #include <vector>
 
@@ -40,7 +39,7 @@ struct AlignedBuffer {
 	/**
 	 * Frees the buffer
 	 */
-	~AlignedBuffer() { std::free(p); }
+	~AlignedBuffer() { ::operator delete(p, std::align_val_t(64)); }
 
 	/**
 	 * Returns the buffer, allocating it on the first call. Later calls ignore
@@ -53,8 +52,7 @@ struct AlignedBuffer {
 	 */
 	float* get(size_t floats) {
 		if (!p) {
-			p = static_cast<float*>(std::aligned_alloc(64, floats * sizeof(float)));
-			if (!p) throw std::bad_alloc();
+			p = static_cast<float*>(::operator new(floats * sizeof(float), std::align_val_t(64)));
 		}
 		return p;
 	}
