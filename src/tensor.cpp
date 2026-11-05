@@ -7,6 +7,7 @@
 #include "nn/tensor.hpp"
 #include "nn/kernels/gemm.hpp"
 #include "nn/kernels/parallel.hpp"
+#include "nn/random.hpp"
 
 #include <numeric>
 #include <functional>
@@ -399,7 +400,15 @@ Tensor Tensor::ones(std::vector<size_t> shape) { return Tensor(std::move(shape),
 Tensor Tensor::full(std::vector<size_t> shape, float v) { return Tensor(std::move(shape), v); }
 
 Tensor Tensor::random(std::vector<size_t> shape, float lo, float hi) {
-	static std::mt19937 gen(std::random_device{}());
+	// One stream per seed epoch, so repeated calls continue it and manual_seed restarts it
+	static std::mt19937 gen;
+	static uint64_t epoch = 0;
+	static bool init = false;
+	if (!init || epoch != seed_epoch()) {
+		epoch = seed_epoch();
+		gen = derive_generator("tensor.random");
+		init = true;
+	}
 	std::uniform_real_distribution<float> dist(lo, hi);
 	Tensor out(std::move(shape));
 	for (float& v : out.data_) {

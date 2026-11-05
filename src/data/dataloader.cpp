@@ -5,6 +5,7 @@
  */
 
 #include "nn/data/dataloader.hpp"
+#include "nn/random.hpp"
 
 #include <algorithm>
 #include <numeric>
@@ -12,7 +13,7 @@
 namespace nn {
 
 DataLoader::DataLoader(const Dataset& dataset, size_t batch_size, bool shuffle)
-	: dataset_(dataset), batch_size_(batch_size), shuffle_(shuffle), rng_(std::random_device{}()) {
+	: dataset_(dataset), batch_size_(batch_size), shuffle_(shuffle), rng_(derive_generator("dataloader")) {
 	if (batch_size_ == 0) {
 		throw TensorShapeError();
 	}

@@ -17,6 +17,7 @@ option(NN_NATIVE "Compile with -march=native" OFF)
 
 add_library(nn_core STATIC
 	src/tensor.cpp
+	src/random.cpp
 	src/kernels/gemm.cpp
 	src/kernels/parallel.cpp
 	src/autograd/value.cpp

@@ -1,5 +1,6 @@
 add_executable(nn_tests
 	test_tensor.cpp
+	test_random.cpp
 	test_autograd.cpp
 	test_nn.cpp
 	test_optim.cpp
