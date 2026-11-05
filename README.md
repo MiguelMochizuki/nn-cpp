@@ -10,8 +10,8 @@ The library is organized in four layers, each building on the one before it:
 
 - **`Tensor`** — a general N-dimensional `float` array with row-major storage: construction, indexing, reshaping, broadcasting arithmetic, reductions, and batched matrix multiplication.
 - **Autograd** — a `Value` handle wraps a `Tensor` in a computation graph. Differentiable operations (`add`, `matmul`, `conv2d`, `relu`, `cross_entropy_loss`, ...) build the graph as they run; `backward()` walks it in reverse to compute gradients.
-- **`nn`** — layers (`Linear`, `Conv2d`, `MaxPool2d`, `Flatten`, activations) and the `Sequential` container that chains them. A layer only implements `forward()`; gradients are derived automatically by the autograd engine underneath.
-- **`optim` and `data`** — `SGD` and `Adam` optimizers, checkpoint save/load, and a `Dataset`/`DataLoader` pair for batching and shuffling training data from any source you implement.
+- **`nn`** — layers (`Linear`, `Conv2d`, `MaxPool2d`, `AvgPool2d`, `GlobalAvgPool2d`, `BatchNorm1d/2d`, `Dropout`, `Flatten`, activations) and the `Sequential` container that chains them, with `train()`/`eval()` modes. A layer only implements `forward()`; gradients are derived automatically by the autograd engine underneath.
+- **`optim` and `data`** — `SGD`, `Adam` and `AdamW` optimizers, learning-rate schedulers, gradient clipping, checkpoint save/load, and a `Dataset`/`DataLoader` pair for batching and shuffling training data from any source you implement, plus `TensorDataset`, `random_split`, input transforms and a FER-2013 CSV loader. `manual_seed()` makes initialisation, shuffling and dropout reproducible.
 
 The design takes inspiration from PyTorch's vocabulary (`Module`, `Sequential`, `Optimizer`) without depending on it or anything else — every operation here is implemented directly.
 
@@ -22,20 +22,22 @@ apps/
   bench/          benchmark harness (bench, bench_tests), run_baseline.sh / profile.sh, compare_csv.py (before/after CSV ratios)
   mnist/          IDX parser, MnistDataset, train_mnist and its tests
   xor/            xor_demo
+  fer2013/        train_fer2013 (Conv-BN-ReLU network on a FER-2013 CSV)
   CMakeLists.txt
 cmake/            FetchDoctest.cmake (fetches doctest for the tests), nn_cppConfig.cmake.in (package config)
 docs/
   baseline/       recorded benchmark CSVs, perf profiles and MNIST runs: top level = Phase 0 baseline,
                   phase1/ to phase3/ and followups/ = later runs
   releasing.md    steps to cut a release
-  phase0-results.md ... phase3-results.md, followups-results.md   per-phase measurements
+  phase0-results.md ... phase3-results.md, followups-results.md, v1.1.0-results.md   per-phase measurements
 include/nn/
   autograd/       Value and the differentiable operations
-  nn/             Module, layers, losses and Sequential
-  optim/          Optimizer, SGD and Adam
-  data/           Dataset and DataLoader
+  nn/             Module, layers (including Dropout, BatchNorm, pooling), losses and Sequential
+  optim/          Optimizer, SGD, Adam, AdamW, LR schedulers and gradient clipping
+  data/           Dataset, DataLoader, TensorDataset, Subset/random_split, transforms and the FER-2013 loader
   kernels/        gemm.hpp: blocked sgemm (AVX2/FMA and SSE2 microkernels, unpacked loop elsewhere);
                   parallel.hpp: fork/join thread pool (parallel_for, parallel_range)
+  random.hpp      manual_seed and the per-component random streams
   tensor.hpp      the Tensor type
   checkpoint.hpp  save and load of weights and optimizer state
 src/              implementations, mirroring include/nn
@@ -80,7 +82,7 @@ The Phase 0 runs (98.11% native, 98.47% portable) took about 1:42 each on a sing
 
 ### Per-phase reports
 
-[Phase 0](docs/phase0-results.md) (baseline and profile), [Phase 1](docs/phase1-results.md), [Phase 2](docs/phase2-results.md), [Phase 3](docs/phase3-results.md), [follow-ups](docs/followups-results.md).
+[Phase 0](docs/phase0-results.md) (baseline and profile), [Phase 1](docs/phase1-results.md), [Phase 2](docs/phase2-results.md), [Phase 3](docs/phase3-results.md), [follow-ups](docs/followups-results.md), [v1.1.0](docs/v1.1.0-results.md) (performance guard against v1.0.0 and the `cnn_fer` workload).
 
 ## Build
 
@@ -165,6 +167,64 @@ Run the built-in version of this example:
 
 The directory must contain the four standard MNIST files: `train-images-idx3-ubyte`, `train-labels-idx1-ubyte`, `t10k-images-idx3-ubyte`, `t10k-labels-idx1-ubyte`. These are not downloaded automatically — obtain them from an MNIST mirror and point the program at the directory holding them.
 
+### Regularisation, schedules and data pipelines (1.1)
+
+```cpp
+#include "nn/random.hpp"
+#include "nn/nn/batchnorm.hpp"
+#include "nn/nn/dropout.hpp"
+#include "nn/nn/pool2d.hpp"
+#include "nn/optim/adamw.hpp"
+#include "nn/optim/scheduler.hpp"
+#include "nn/optim/clip.hpp"
+#include "nn/data/tensor_dataset.hpp"
+#include "nn/data/subset.hpp"
+#include "nn/data/transform.hpp"
+
+nn::manual_seed(42);   // weights, shuffles, dropout masks and transforms repeat for the same seed and thread count
+
+nn::TensorDataset all(images, labels);                         // images {N,1,H,W}, labels {N}
+auto parts = nn::random_split(all, {0.8, 0.2}, /*seed=*/1);    // train / validation
+auto flip = std::make_shared<nn::RandomHorizontalFlip>(0.5f);
+nn::TransformedDataset train_set(parts[0], flip);
+nn::DataLoader train_loader(train_set, 32, /*shuffle=*/true);
+
+nn::Sequential model;
+model.add(std::make_unique<nn::Conv2d>(1, 8, 3, 1, 1));
+model.add(std::make_unique<nn::BatchNorm2d>(8));
+model.add(std::make_unique<nn::ReLU>());
+model.add(std::make_unique<nn::GlobalAvgPool2d>());
+model.add(std::make_unique<nn::Dropout>(0.3f));
+model.add(std::make_unique<nn::Linear>(8, 3));
+
+nn::AdamW optimizer(model.parameters(), 1e-2f, 0.9f, 0.999f, 1e-8f, /*weight_decay=*/1e-2f);
+nn::CosineAnnealingLR schedule(optimizer, /*t_max=*/epochs * train_loader.num_batches());
+
+model.train();                                                 // batch statistics, dropout active
+for (/* epochs and batches */) {
+    auto [x, y] = train_loader.get_batch(b);
+    nn::Value loss = nn::cross_entropy_loss(model.forward(x), y);
+    optimizer.zero_grad();
+    loss.backward();
+    nn::clip_grad_norm(model.parameters(), 1.0f);
+    optimizer.step();
+    schedule.step();                                           // optimizer.lr() follows the cosine
+}
+model.eval();                                                  // running statistics, dropout is the identity
+```
+
+This is a tested program (built against an installed prefix with `find_package(nn_cpp 1.1)`), trimmed here to the relevant lines. `cross_entropy_loss` also takes per-class weights and a label-smoothing factor.
+
+### Training on FER-2013 (1.1)
+
+`apps/fer2013/train_fer2013.cpp` trains a Conv-BatchNorm-ReLU network with global average pooling and dropout on the FER-2013 facial-expression CSV (columns `emotion,pixels,Usage`; `Training` rows train, `PublicTest` rows validate). FER-2013 is not part of this repository and is not downloaded: obtain `fer2013.csv` separately, for example from its Kaggle challenge page.
+
+```bash
+./build/apps/train_fer2013 <fer2013.csv> [--epochs N] [--batch N] [--lr X] [--seed N] [--out ckpt]
+```
+
+Defaults are `--epochs 20 --batch 64 --lr 1e-3 --seed 1 --out fer2013.ckpt`. The `cnn_fer` row of `apps/bench` times one step of the same network shape.
+
 ### Saving and resuming
 
 `save_checkpoint` writes a model's parameters, an optimizer's state (SGD learning rate, momentum and velocity) and a step counter of your choosing to one file; `load_checkpoint` restores them.
@@ -179,7 +239,7 @@ int64_t epoch = nn::load_checkpoint("model.ckpt", model, &optimizer);   // resum
 nn::load_checkpoint("model.ckpt", model);                               // inference only
 ```
 
-The file is little-endian with fixed-width integers and IEEE-754 floats, so it loads identically anywhere. Parameters are stored by name (`0.weight`, `2.bias`, ...); loading checks every name and shape first and throws `std::runtime_error` naming what differs, leaving the model untouched. The architecture itself is not stored, so you must rebuild the same model in code. Layers without parameters leave no trace, so swapping `ReLU` for `Tanh` at the same position is not detected. Resuming does not restore `DataLoader` shuffle order.
+The file is little-endian with fixed-width integers and IEEE-754 floats, so it loads identically anywhere. Parameters are stored by name (`0.weight`, `2.bias`, ...), followed by module buffers (BatchNorm running statistics); the optimizer's current learning rate is saved too, but a scheduler's step counter is not (restore it with `set_step`), nor is Dropout's random stream; loading checks every name and shape first and throws `std::runtime_error` naming what differs, leaving the model untouched. The architecture itself is not stored, so you must rebuild the same model in code. Layers without parameters leave no trace, so swapping `ReLU` for `Tanh` at the same position is not detected. Resuming does not restore `DataLoader` shuffle order. A v1.1 build reads every v1.0 file; a file saved without buffers cannot be loaded into a model that has them.
 
 ### Using your own data
 
@@ -215,15 +275,20 @@ include/nn/
 ├── nn/
 │   ├── module.hpp            Module: base interface for layers
 │   ├── linear.hpp, conv2d.hpp, pool2d.hpp, flatten.hpp, activation.hpp
+│   ├── dropout.hpp, batchnorm.hpp
 │   ├── sequential.hpp        Sequential: chains layers together
 │   └── loss.hpp
 ├── optim/
 │   ├── optimizer.hpp         Optimizer: base interface
 │   ├── sgd.hpp                SGD (with optional momentum)
-│   └── adam.hpp               Adam
+│   ├── adam.hpp, adamw.hpp    Adam, AdamW
+│   ├── scheduler.hpp          LRScheduler, StepLR, CosineAnnealingLR, LinearWarmup
+│   └── clip.hpp               clip_grad_norm, clip_grad_value
+├── random.hpp                  manual_seed, derive_generator
 └── data/
     ├── dataset.hpp            Dataset: interface you implement for your own data
-    └── dataloader.hpp         DataLoader: batching and shuffling over any Dataset
+    ├── dataloader.hpp         DataLoader: batching and shuffling over any Dataset
+    ├── tensor_dataset.hpp, subset.hpp, transform.hpp, fer2013.hpp
 ```
 
 ### How the autograd engine works
@@ -240,29 +305,38 @@ Because every layer's `forward()` is expressed purely in terms of these differen
 
 | Header | Provides |
 |---|---|
-| `nn/tensor.hpp` | `Tensor`; `add`, `sub`, `mul`, `div`, `scale`, `matmul` (free functions) |
+| `nn/tensor.hpp` | `Tensor`; `add`, `sub`, `mul`, `div`, `scale`, `matmul` (free functions). `Tensor::random` draws from the library's seeded stream |
+| `nn/random.hpp` | `manual_seed(seed)`, `is_seeded()`, `derive_generator(stream)` — one seed, an independent reproducible generator per component (`Tensor::random`, `DataLoader`, `Dropout`, transforms) |
 | `nn/autograd/value.hpp` | `Value` — `leaf()`, `node()`, `data()`, `grad()`, `backward()`, `zero_grad()`, `requires_grad()`, `has_grad()` (false for a non-leaf node before `backward()` reaches it, as in PyTorch where such a grad is `None`); `NoGradGuard` (scope that skips graph building, for inference). On a temporary, `data()`/`grad()` return copies, so `model.forward(x).data()` is safe |
-| `nn/autograd/ops.hpp` | Differentiable ops: `add`, `sub`, `mul`, `scale`, `sum`, `transpose`, `reshape`, `matmul`, `matmul_bt` (`a * b^T` without a transpose copy), `relu`, `sigmoid`, `tanh`, `softmax`, `conv2d`, `maxpool2d`, `avgpool2d`, `cross_entropy_loss`, `mse_loss` |
-| `nn/nn/module.hpp` | `Module` — base interface (`forward()`, `parameters()`) |
+| `nn/autograd/ops.hpp` | Differentiable ops: `add`, `sub`, `mul`, `scale`, `sum` (all elements, or over an `axis` with `keepdim`), `mean(x, axis, keepdim)`, `rsqrt`, `transpose`, `reshape`, `matmul`, `matmul_bt` (`a * b^T` without a transpose copy), `relu`, `sigmoid`, `tanh`, `softmax`, `conv2d` (stride, padding, plus `dilation` and `groups`), `maxpool2d`, `avgpool2d`, `cross_entropy_loss` (optionally with per-class weights and label smoothing), `mse_loss` |
+| `nn/nn/module.hpp` | `Module` — base interface (`forward()`, `parameters()`, `named_parameters()`, `named_buffers()`, `train(mode)`, `eval()`, `is_training()`) |
 | `nn/nn/linear.hpp` | `Linear(in_features, out_features)` |
-| `nn/nn/conv2d.hpp` | `Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0)` |
+| `nn/nn/conv2d.hpp` | `Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0)`, or with a `{kh, kw}` kernel plus `dilation=1, groups=1` |
 | `nn/nn/pool2d.hpp` | `MaxPool2d(kernel_size, stride)`, `AvgPool2d(kernel_size, stride)`, `GlobalAvgPool2d()` |
 | `nn/nn/batchnorm.hpp` | `BatchNorm1d(num_features, eps=1e-5, momentum=0.1)`, `BatchNorm2d(...)`; running statistics are buffers saved by checkpoints |
+| `nn/nn/dropout.hpp` | `Dropout(p=0.5)` — inverted dropout in training mode, identity in eval mode |
 | `nn/nn/flatten.hpp` | `Flatten` |
 | `nn/nn/activation.hpp` | `ReLU`, `Sigmoid`, `Tanh`, `Softmax(axis)` |
 | `nn/nn/sequential.hpp` | `Sequential` — `add(layer)`, `forward()`, `parameters()` |
 | `nn/checkpoint.hpp` | `save_checkpoint(path, model, optimizer*, step)`, `load_checkpoint(path, model, optimizer*)` |
-| `nn/nn/loss.hpp` | `cross_entropy_loss(logits, targets)`, `mse_loss(predictions, targets)` |
-| `nn/optim/optimizer.hpp` | `Optimizer` — base interface (`step()`, `zero_grad()`) |
+| `nn/nn/loss.hpp` | `cross_entropy_loss(logits, targets)` (and the class-weight / label-smoothing overload), `mse_loss(predictions, targets)` |
+| `nn/optim/optimizer.hpp` | `Optimizer` — base interface (`step()`, `zero_grad()`, `lr()`, `set_lr(lr)`) |
 | `nn/optim/sgd.hpp` | `SGD(params, lr, momentum=0)` |
 | `nn/optim/adam.hpp` | `Adam(params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8)` |
+| `nn/optim/adamw.hpp` | `AdamW(params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=1e-2)` — decoupled weight decay |
+| `nn/optim/scheduler.hpp` | `LRScheduler` (`step()`, `set_step(n)`, `step_count()`, `base_lr()`), `StepLR(opt, step_size, gamma=0.1)`, `CosineAnnealingLR(opt, t_max, eta_min=0)`, `LinearWarmup(opt, inner, warmup_steps)` |
+| `nn/optim/clip.hpp` | `clip_grad_norm(params, max_norm)` (returns the norm before clipping), `clip_grad_value(params, clip)` |
 | `nn/data/dataset.hpp` | `Dataset` — interface (`size()`, `get(index)`) |
+| `nn/data/tensor_dataset.hpp` | `TensorDataset(inputs, targets)` — rows of two tensors as samples |
+| `nn/data/subset.hpp` | `Subset(dataset, indices)`, `random_split(dataset, fractions, seed)` |
+| `nn/data/transform.hpp` | `Transform`, `Compose`, `Normalize(mean, std)`, `RandomHorizontalFlip(p)`, `RandomShift(max_shift)`, `TransformedDataset(dataset, transform)`, `compute_mean_std(dataset)` |
+| `nn/data/fer2013.hpp` | `Fer2013Dataset(csv_path, usage=, image_size=48)` — FER-2013 CSV loader (the data is not included) |
 | `nn/kernels/parallel.hpp` | `num_threads()`, `set_num_threads(n)`, `parallel_for(n_chunks, fn)`, `parallel_range(n, min_per_chunk, fn)` — fork/join thread pool used by `sgemm` (x86-64), the elementwise ops, ReLU, im2col/col2im and max-pooling |
-| `nn/data/dataloader.hpp` | `DataLoader(dataset, batch_size, shuffle)` — `num_batches()`, `reset_epoch()`, `get_batch(i)` |
+| `nn/data/dataloader.hpp` | `DataLoader(dataset, batch_size, shuffle[, drop_last])` — `num_batches()`, `reset_epoch()`, `get_batch(i)`; the shuffle is a portable Fisher-Yates, so a seed gives the same order on every platform |
 
 ## Scope
 
-This project targets clarity and correctness over raw throughput: matrix products go through a cache-blocked, multithreaded GEMM kernel (`nn/kernels/gemm.hpp`) with an AVX2/FMA microkernel (when compiled for AVX2 and FMA, for example `-DNN_NATIVE=ON` on such a CPU), an SSE2 microkernel on other x86-64 builds and an unpacked transpose-aware loop on other targets; the GEMM is threaded on x86-64 only, while the elementwise ops, ReLU, im2col, col2im and max-pooling are threaded on all targets (a fork/join pool in `nn/kernels/parallel.hpp`; GEMM results are bitwise identical for any thread count); op results are moved into the autograd graph rather than copied. The tensor's dtype is fixed to `float`; a runtime-selectable dtype is a natural future extension but is not implemented here.
+This project targets clarity and correctness over raw throughput: matrix products go through a cache-blocked, multithreaded GEMM kernel (`nn/kernels/gemm.hpp`) with an AVX2/FMA microkernel (when compiled for AVX2 and FMA, for example `-DNN_NATIVE=ON` on such a CPU), an SSE2 microkernel on other x86-64 builds and an unpacked transpose-aware loop on other targets; the GEMM is threaded on x86-64 only, while the elementwise ops, ReLU, im2col, col2im and max-pooling are threaded on all targets (a fork/join pool in `nn/kernels/parallel.hpp`; GEMM results are bitwise identical for any thread count); op results are moved into the autograd graph rather than copied. The tensor's dtype is fixed to `float`; a runtime-selectable dtype is a natural future extension but is not implemented here. Version 1.1 adds what a small CNN training run needs (seeding, train/eval modes, BatchNorm, Dropout, AdamW, schedulers, clipping, a data pipeline) without touching the v1.0 API, but these pieces are composed from basic ops and are not yet fast: BatchNorm-heavy networks run mostly on serial elementwise code (see [docs/v1.1.0-results.md](docs/v1.1.0-results.md)). Dropout's random stream is not saved in checkpoints, and `Tensor::random` comes from `std::uniform_real_distribution`, so a seed reproduces initialisation per standard library, not across libstdc++, libc++ and MSVC.
 
 ## Documentation Conventions
 
