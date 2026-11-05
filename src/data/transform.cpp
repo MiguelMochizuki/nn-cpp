@@ -6,6 +6,7 @@
 
 #include "nn/data/transform.hpp"
 #include "nn/random.hpp"
+#include "shuffle.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -76,9 +77,9 @@ Tensor RandomShift::operator()(const Tensor& sample) {
 	if (sample.shape().size() != 3) {
 		throw TensorShapeError();
 	}
-	size_t span = 2 * max_shift_ + 1;
-	long dy = static_cast<long>(rng_() % span) - static_cast<long>(max_shift_);
-	long dx = static_cast<long>(rng_() % span) - static_cast<long>(max_shift_);
+	std::uint32_t span = static_cast<std::uint32_t>(2 * max_shift_ + 1);
+	long dy = static_cast<long>(bounded_draw(rng_, span)) - static_cast<long>(max_shift_);
+	long dx = static_cast<long>(bounded_draw(rng_, span)) - static_cast<long>(max_shift_);
 	long C = static_cast<long>(sample.shape()[0]);
 	long H = static_cast<long>(sample.shape()[1]);
 	long W = static_cast<long>(sample.shape()[2]);
