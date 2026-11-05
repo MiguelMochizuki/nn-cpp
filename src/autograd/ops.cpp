@@ -7,6 +7,7 @@
 #include "nn/autograd/ops.hpp"
 #include "nn/kernels/parallel.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -85,6 +86,30 @@ Conv2dOutputSize conv2d_output_size(size_t h, size_t w, size_t kh, size_t kw, si
 	return {h_out, w_out};
 }
 
+struct WindowRange {
+	size_t lo;
+	size_t hi;
+};
+
+/**
+ * Finds the output columns whose window tap falls inside the input along one axis
+ *
+ * Parameters:
+ * size_t w_out: Output size along the axis
+ * size_t tap: Kernel offset along the axis
+ * size_t stride: Step between windows
+ * size_t padding: Zero padding added on each side
+ * size_t W: Input size along the axis
+ *
+ * Returns WindowRange: Half-open range [lo, hi) of output indices o with 0 <= o*stride + tap - padding < W
+ */
+WindowRange valid_window(size_t w_out, size_t tap, size_t stride, size_t padding, size_t W) {
+	size_t lo = tap >= padding ? 0 : (padding - tap + stride - 1) / stride;
+	size_t hi = (W + padding > tap) ? (W + padding - tap - 1) / stride + 1 : 0;
+	hi = std::min(hi, w_out);
+	return {std::min(lo, hi), hi};
+}
+
 /**
  * Unrolls every convolution window of x into a column, so the convolution becomes a matmul
  *
@@ -98,73 +123,79 @@ Conv2dOutputSize conv2d_output_size(size_t h, size_t w, size_t kh, size_t kw, si
  */
 Tensor im2col(const Tensor& x, size_t kh, size_t kw, size_t stride, size_t padding) {
 	size_t N = x.shape()[0], Cin = x.shape()[1], H = x.shape()[2], W = x.shape()[3];
-	auto [h_out, w_out] = conv2d_output_size(H, W, kh, kw, stride, padding);
-	Tensor col({N, Cin * kh * kw, h_out * w_out});
+	Conv2dOutputSize out_size = conv2d_output_size(H, W, kh, kw, stride, padding);
+	size_t h_out = out_size.h_out, w_out = out_size.w_out;
+	Tensor col({N, Cin * kh * kw, h_out * w_out});  // zero-filled, so padding cells are never written
 
 	const float* x_data = x.data().data();
 	float* col_data = col.data().data();
 	size_t sN = x.strides()[0], sC = x.strides()[1], sH = x.strides()[2], sW = x.strides()[3];
 	size_t col_sN = col.strides()[0], col_sRow = col.strides()[1];
+	size_t per_sample = Cin * kh * kw * h_out * w_out;
 
-	for (size_t n = 0; n < N; n++) {
-		for (size_t c = 0; c < Cin; c++) {
-			for (size_t ph = 0; ph < kh; ph++) {
-				for (size_t pw = 0; pw < kw; pw++) {
-					size_t row = (c * kh + ph) * kw + pw;
-					size_t col_row_base = n * col_sN + row * col_sRow;
-					for (size_t oh = 0; oh < h_out; oh++) {
-						long ih = static_cast<long>(oh * stride + ph) - static_cast<long>(padding);
-						bool ih_valid = ih >= 0 && ih < static_cast<long>(H);
-						for (size_t ow = 0; ow < w_out; ow++) {
-							long iw = static_cast<long>(ow * stride + pw) - static_cast<long>(padding);
-							size_t col_idx = oh * w_out + ow;
-							float v = 0.0f;
-							if (ih_valid && iw >= 0 && iw < static_cast<long>(W)) {
-								v = x_data[n * sN + c * sC + static_cast<size_t>(ih) * sH + static_cast<size_t>(iw) * sW];
-							}
-							col_data[col_row_base + col_idx] = v;
+	kernels::parallel_range(N, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, per_sample)),
+	                        [=](size_t n_lo, size_t n_hi) {
+		for (size_t n = n_lo; n < n_hi; n++) {
+			for (size_t c = 0; c < Cin; c++) {
+				for (size_t ph = 0; ph < kh; ph++) {
+					for (size_t pw = 0; pw < kw; pw++) {
+						size_t row = (c * kh + ph) * kw + pw;
+						float* col_row = col_data + n * col_sN + row * col_sRow;
+						const float* x_plane = x_data + n * sN + c * sC;
+						WindowRange ow = valid_window(w_out, pw, stride, padding, W);
+						for (size_t oh = 0; oh < h_out; oh++) {
+							long ih = static_cast<long>(oh * stride + ph) - static_cast<long>(padding);
+							if (ih < 0 || ih >= static_cast<long>(H)) continue;
+							const float* src = x_plane + static_cast<size_t>(ih) * sH;
+							float* dst = col_row + oh * w_out;
+							size_t iw = ow.lo * stride + pw - padding;
+							for (size_t o = ow.lo; o < ow.hi; o++, iw += stride) dst[o] = src[iw * sW];
 						}
 					}
 				}
 			}
 		}
-	}
+	});
 	return col;
 }
 
 Tensor col2im(const Tensor& col_grad, const std::vector<size_t>& x_shape, size_t kh, size_t kw, size_t stride,
               size_t padding) {
 	size_t N = x_shape[0], Cin = x_shape[1], H = x_shape[2], W = x_shape[3];
-	auto [h_out, w_out] = conv2d_output_size(H, W, kh, kw, stride, padding);
+	Conv2dOutputSize out_size = conv2d_output_size(H, W, kh, kw, stride, padding);
+	size_t h_out = out_size.h_out, w_out = out_size.w_out;
 	Tensor grad_x(x_shape);
 
 	const float* col_data = col_grad.data().data();
 	float* x_data = grad_x.data().data();
 	size_t sN = grad_x.strides()[0], sC = grad_x.strides()[1], sH = grad_x.strides()[2], sW = grad_x.strides()[3];
 	size_t col_sN = col_grad.strides()[0], col_sRow = col_grad.strides()[1];
+	size_t per_sample = Cin * kh * kw * h_out * w_out;
 
-	for (size_t n = 0; n < N; n++) {
-		for (size_t c = 0; c < Cin; c++) {
-			for (size_t ph = 0; ph < kh; ph++) {
-				for (size_t pw = 0; pw < kw; pw++) {
-					size_t row = (c * kh + ph) * kw + pw;
-					size_t col_row_base = n * col_sN + row * col_sRow;
-					for (size_t oh = 0; oh < h_out; oh++) {
-						long ih = static_cast<long>(oh * stride + ph) - static_cast<long>(padding);
-						bool ih_valid = ih >= 0 && ih < static_cast<long>(H);
-						for (size_t ow = 0; ow < w_out; ow++) {
-							long iw = static_cast<long>(ow * stride + pw) - static_cast<long>(padding);
-							if (ih_valid && iw >= 0 && iw < static_cast<long>(W)) {
-								size_t col_idx = oh * w_out + ow;
-								x_data[n * sN + c * sC + static_cast<size_t>(ih) * sH + static_cast<size_t>(iw) * sW] +=
-									col_data[col_row_base + col_idx];
-							}
+	// Each sample accumulates only into its own slice of grad_x, so samples can run on separate threads
+	kernels::parallel_range(N, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, per_sample)),
+	                        [=](size_t n_lo, size_t n_hi) {
+		for (size_t n = n_lo; n < n_hi; n++) {
+			for (size_t c = 0; c < Cin; c++) {
+				for (size_t ph = 0; ph < kh; ph++) {
+					for (size_t pw = 0; pw < kw; pw++) {
+						size_t row = (c * kh + ph) * kw + pw;
+						const float* col_row = col_data + n * col_sN + row * col_sRow;
+						float* x_plane = x_data + n * sN + c * sC;
+						WindowRange ow = valid_window(w_out, pw, stride, padding, W);
+						for (size_t oh = 0; oh < h_out; oh++) {
+							long ih = static_cast<long>(oh * stride + ph) - static_cast<long>(padding);
+							if (ih < 0 || ih >= static_cast<long>(H)) continue;
+							float* dst = x_plane + static_cast<size_t>(ih) * sH;
+							const float* src = col_row + oh * w_out;
+							size_t iw = ow.lo * stride + pw - padding;
+							for (size_t o = ow.lo; o < ow.hi; o++, iw += stride) dst[iw * sW] += src[o];
 						}
 					}
 				}
 			}
 		}
-	}
+	});
 	return grad_x;
 }
 
@@ -437,41 +468,44 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 
 	const float* x_data = x.data().data().data();
 	float* result_data = result.data().data();
+	size_t* argmax_data = argmax.data();
+	size_t out_plane = h_out * w_out;
 
-	for (size_t n = 0; n < N; n++) {
-		for (size_t c = 0; c < C; c++) {
+	// Each (n, c) plane reads and writes only its own slices, so planes can run on separate threads
+	size_t chunk = std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, out_plane * kernel_size * kernel_size));
+	kernels::parallel_range(N * C, chunk, [=](size_t p_lo, size_t p_hi) {
+		for (size_t p = p_lo; p < p_hi; p++) {
+			const float* plane = x_data + p * H * W;
 			for (size_t oh = 0; oh < h_out; oh++) {
 				for (size_t ow = 0; ow < w_out; ow++) {
 					float best = -std::numeric_limits<float>::infinity();
-					size_t best_flat = 0;
+					size_t best_flat = p * H * W;
 					for (size_t ph = 0; ph < kernel_size; ph++) {
+						const float* row = plane + (oh * stride + ph) * W + ow * stride;
 						for (size_t pw = 0; pw < kernel_size; pw++) {
-							size_t ih = oh * stride + ph;
-							size_t iw = ow * stride + pw;
-							size_t flat = ((n * C + c) * H + ih) * W + iw;
-							float v = x_data[flat];
-							if (v > best) {
-								best = v;
-								best_flat = flat;
+							if (row[pw] > best) {
+								best = row[pw];
+								best_flat = p * H * W + (oh * stride + ph) * W + ow * stride + pw;
 							}
 						}
 					}
-					size_t out_idx = ((n * C + c) * h_out + oh) * w_out + ow;
-					result_data[out_idx] = best;
-					argmax[out_idx] = best_flat;
+					result_data[p * out_plane + oh * w_out + ow] = best;
+					argmax_data[p * out_plane + oh * w_out + ow] = best_flat;
 				}
 			}
 		}
-	}
+	});
 
-	std::vector<size_t> x_shape = x.data().shape();
-	return Value::node(std::move(result), {x}, [x, argmax, x_shape](const Tensor& grad_out) {
+	return Value::node(std::move(result), {x}, [x, argmax = std::move(argmax), N, C, out_plane](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
-		Tensor grad_x(x_shape);
-		for (size_t i = 0; i < grad_out.size(); i++) {
-			grad_x.data()[argmax[i]] += grad_out.data()[i];
-		}
-		x.grad() += grad_x;
+		const float* g = grad_out.data().data();
+		float* dst = x.grad().data().data();
+		const size_t* arg = argmax.data();
+		// Every argmax entry of plane p points inside plane p, so planes write disjoint ranges
+		size_t chunk = std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, out_plane));
+		kernels::parallel_range(N * C, chunk, [=](size_t p_lo, size_t p_hi) {
+			for (size_t i = p_lo * out_plane; i < p_hi * out_plane; i++) dst[arg[i]] += g[i];
+		});
 	});
 }
 

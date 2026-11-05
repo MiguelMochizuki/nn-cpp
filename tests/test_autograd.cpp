@@ -10,6 +10,7 @@
 #include "gradcheck.hpp"
 #include "nn/kernels/parallel.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <type_traits>
 #include <utility>
@@ -408,6 +409,115 @@ TEST_CASE("conv2d gradcheck with uneven output size, stride 2, multiple channels
 	Value y = conv2d(x, w, b, 2, 1);
 	CHECK(y.data().shape() == std::vector<size_t>{2, 2, 4, 3});
 	CHECK(gradcheck(f, x, 1e-3f, 0.15f));
+}
+
+namespace {
+// Direct convolution, window by window, as the reference for the im2col path
+Tensor reference_conv(const Tensor& x, const Tensor& w, const Tensor& b, size_t stride, size_t pad) {
+	size_t N = x.shape()[0], Cin = x.shape()[1], H = x.shape()[2], W = x.shape()[3];
+	size_t Cout = w.shape()[0], kh = w.shape()[2], kw = w.shape()[3];
+	size_t Ho = (H + 2 * pad - kh) / stride + 1, Wo = (W + 2 * pad - kw) / stride + 1;
+	Tensor out({N, Cout, Ho, Wo});
+	for (size_t n = 0; n < N; n++)
+		for (size_t co = 0; co < Cout; co++)
+			for (size_t oh = 0; oh < Ho; oh++)
+				for (size_t ow = 0; ow < Wo; ow++) {
+					float acc = b.data()[co];
+					for (size_t c = 0; c < Cin; c++)
+						for (size_t i = 0; i < kh; i++)
+							for (size_t j = 0; j < kw; j++) {
+								long ih = static_cast<long>(oh * stride + i) - static_cast<long>(pad);
+								long iw = static_cast<long>(ow * stride + j) - static_cast<long>(pad);
+								if (ih < 0 || iw < 0 || ih >= static_cast<long>(H) || iw >= static_cast<long>(W)) continue;
+								acc += x.get({n, c, static_cast<size_t>(ih), static_cast<size_t>(iw)}) * w.get({co, c, i, j});
+							}
+					out.at({n, co, oh, ow}) = acc;
+				}
+	return out;
+}
+
+Tensor patterned(std::vector<size_t> shape, float scale_by) {
+	Tensor t(std::move(shape));
+	for (size_t i = 0; i < t.size(); i++) t.data()[i] = (static_cast<float>((i * 37) % 19) - 9.0f) * scale_by;
+	return t;
+}
+}  // namespace
+
+TEST_CASE("conv2d matches a direct convolution on odd sizes and its results do not depend on the thread count") {
+	struct Cfg { size_t N, Cin, H, W, Cout, k, stride, pad; };
+	std::vector<Cfg> cfgs = {
+		{1, 1, 1, 1, 1, 1, 1, 0},   // 1x1 input and kernel
+		{7, 2, 5, 7, 3, 1, 1, 0},   // 1x1 kernel
+		{1, 1, 2, 2, 2, 5, 1, 2},   // kernel larger than the input, padded
+		{7, 2, 9, 6, 3, 3, 2, 1},   // batch 7, stride 2
+		{7, 3, 16, 16, 4, 3, 1, 1}, // large enough to split across threads
+		{3, 2, 33, 5, 2, 4, 3, 3},  // padding wider than the stride
+	};
+	size_t saved = nn::kernels::num_threads();
+	for (const Cfg& c : cfgs) {
+		Tensor xv = patterned({c.N, c.Cin, c.H, c.W}, 0.07f);
+		Tensor wv = patterned({c.Cout, c.Cin, c.k, c.k}, 0.05f);
+		Tensor bv = patterned({c.Cout}, 0.1f);
+		Tensor expect = reference_conv(xv, wv, bv, c.stride, c.pad);
+		std::vector<float> out1, gx1, gw1, gb1;
+		for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+			nn::kernels::set_num_threads(threads);
+			Value x = Value::leaf(xv, true), w = Value::leaf(wv, true), b = Value::leaf(bv, true);
+			Value y = conv2d(x, w, b, static_cast<int>(c.stride), static_cast<int>(c.pad));
+			REQUIRE(y.data().shape() == expect.shape());
+			for (size_t i = 0; i < expect.size(); i++) CHECK(y.data().data()[i] == doctest::Approx(expect.data()[i]).epsilon(1e-4));
+			sum(y).backward();
+			if (threads == 1) {
+				out1 = y.data().data();
+				gx1 = x.grad().data();
+				gw1 = w.grad().data();
+				gb1 = b.grad().data();
+			} else {
+				CHECK(y.data().data() == out1);
+				CHECK(x.grad().data() == gx1);
+				CHECK(w.grad().data() == gw1);
+				CHECK(b.grad().data() == gb1);
+			}
+		}
+	}
+	nn::kernels::set_num_threads(saved);
+}
+
+TEST_CASE("maxpool2d forward and backward are identical for any thread count and route gradient to the max") {
+	size_t saved = nn::kernels::num_threads();
+	for (size_t k : {size_t{1}, size_t{2}, size_t{3}}) {
+		for (size_t stride : {size_t{1}, size_t{2}}) {
+			Tensor xv = patterned({7, 3, 12, 9}, 0.31f);
+			std::vector<float> out1, g1;
+			for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+				nn::kernels::set_num_threads(threads);
+				Value x = Value::leaf(xv, true);
+				Value y = maxpool2d(x, k, stride);
+				sum(y).backward();
+				// total gradient mass equals the number of windows, each routed to one input cell
+				float total = 0.0f;
+				for (float g : x.grad().data()) total += g;
+				CHECK(total == doctest::Approx(static_cast<float>(y.data().size())));
+				for (size_t i = 0; i < y.data().size(); i++) {
+					size_t ow_n = y.data().shape()[3], oh_n = y.data().shape()[2];
+					size_t pl = i / (oh_n * ow_n), r = i % (oh_n * ow_n), oh = r / ow_n, ow = r % ow_n;
+					float best = -1e30f;
+					for (size_t a = 0; a < k; a++)
+						for (size_t bb = 0; bb < k; bb++)
+							best = std::max(best, xv.data()[pl * 12 * 9 + (oh * stride + a) * 9 + ow * stride + bb]);
+					CHECK(y.data().data()[i] == best);
+				}
+				if (threads == 1) {
+					out1 = y.data().data();
+					g1 = x.grad().data();
+				} else {
+					CHECK(y.data().data() == out1);
+					CHECK(x.grad().data() == g1);
+				}
+			}
+		}
+	}
+	nn::kernels::set_num_threads(saved);
 }
 
 TEST_CASE("conv2d throws when bias size does not match out_channels") {
