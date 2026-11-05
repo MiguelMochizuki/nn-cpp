@@ -302,6 +302,26 @@ TEST_CASE("sigmoid and tanh backward use the stored forward value") {
 	}
 }
 
+TEST_CASE("add, sub and mul backward match the expected gradient for same-shape and broadcast operands") {
+	for (size_t n : {size_t{1}, size_t{7}, size_t{33}, size_t{257}}) {
+		Tensor av({3, n}), bv({n});
+		for (size_t i = 0; i < av.size(); i++) av.data()[i] = static_cast<float>(i % 5) - 2.0f;
+		for (size_t i = 0; i < n; i++) bv.data()[i] = static_cast<float>(i % 3) + 0.5f;
+		Value a = Value::leaf(av, true), same = Value::leaf(av, true), b = Value::leaf(bv, true);
+		sum(add(a, b) - same).backward();  // d/da = 1, d/db = sum over rows = 3, d/dsame = -1
+		for (float g : a.grad().data()) CHECK(g == 1.0f);
+		for (float g : same.grad().data()) CHECK(g == -1.0f);
+		for (float g : b.grad().data()) CHECK(g == 3.0f);
+		Value a2 = Value::leaf(av, true), b2 = Value::leaf(bv, true);
+		sum(mul(a2, b2)).backward();  // d/da = b broadcast, d/db = column sums of a
+		for (size_t i = 0; i < av.size(); i++) CHECK(a2.grad().data()[i] == bv.data()[i % n]);
+		for (size_t j = 0; j < n; j++) {
+			float col = av.data()[j] + av.data()[n + j] + av.data()[2 * n + j];
+			CHECK(b2.grad().data()[j] == doctest::Approx(col));
+		}
+	}
+}
+
 TEST_CASE("softmax rows sum to one") {
 	Value x = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 2, 3, 1, 1, 1}), true);
 	Value y = softmax(x, 1);

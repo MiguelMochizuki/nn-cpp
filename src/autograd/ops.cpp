@@ -38,6 +38,27 @@ Tensor sum_to_shape(const Tensor& grad, const std::vector<size_t>& target_shape)
 	return result;
 }
 
+/**
+ * Adds a gradient into an accumulator, reducing broadcast axes first only when the shapes differ
+ *
+ * Parameters:
+ * Tensor& dst: Accumulator, shaped like the operand that received the gradient
+ * const Tensor& grad: Gradient with the broadcast (output) shape
+ * bool negate: Subtract instead of add
+ *
+ * Returns void
+ */
+void accumulate_grad(Tensor& dst, const Tensor& grad, bool negate = false) {
+	if (grad.shape() == dst.shape()) {
+		if (negate) dst -= grad;
+		else dst += grad;
+		return;
+	}
+	Tensor reduced = sum_to_shape(grad, dst.shape());
+	if (negate) dst -= reduced;
+	else dst += reduced;
+}
+
 struct Conv2dOutputSize {
 	size_t h_out;
 	size_t w_out;
@@ -163,16 +184,16 @@ Tensor insert_axis(const Tensor& t, int axis) {
 Value add(const Value& a, const Value& b) {
 	Tensor result = add(a.data(), b.data());
 	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
-		if (a.requires_grad()) a.grad() += sum_to_shape(grad_out, a.data().shape());
-		if (b.requires_grad()) b.grad() += sum_to_shape(grad_out, b.data().shape());
+		if (a.requires_grad()) accumulate_grad(a.grad(), grad_out);
+		if (b.requires_grad()) accumulate_grad(b.grad(), grad_out);
 	});
 }
 
 Value sub(const Value& a, const Value& b) {
 	Tensor result = sub(a.data(), b.data());
 	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
-		if (a.requires_grad()) a.grad() += sum_to_shape(grad_out, a.data().shape());
-		if (b.requires_grad()) b.grad() -= sum_to_shape(grad_out, b.data().shape());
+		if (a.requires_grad()) accumulate_grad(a.grad(), grad_out);
+		if (b.requires_grad()) accumulate_grad(b.grad(), grad_out, true);
 	});
 }
 
@@ -180,10 +201,10 @@ Value mul(const Value& a, const Value& b) {
 	Tensor result = mul(a.data(), b.data());
 	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) {
-			a.grad() += sum_to_shape(mul(grad_out, b.data()), a.data().shape());
+			accumulate_grad(a.grad(), mul(grad_out, b.data()));
 		}
 		if (b.requires_grad()) {
-			b.grad() += sum_to_shape(mul(grad_out, a.data()), b.data().shape());
+			accumulate_grad(b.grad(), mul(grad_out, a.data()));
 		}
 	});
 }
@@ -231,11 +252,11 @@ Value matmul(const Value& a, const Value& b) {
 	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) {
 			Tensor grad_a = matmul(grad_out, b.data(), false, true);
-			a.grad() += sum_to_shape(grad_a, a.data().shape());
+			accumulate_grad(a.grad(), grad_a);
 		}
 		if (b.requires_grad()) {
 			Tensor grad_b = matmul(a.data(), grad_out, true, false);
-			b.grad() += sum_to_shape(grad_b, b.data().shape());
+			accumulate_grad(b.grad(), grad_b);
 		}
 	});
 }
@@ -245,11 +266,11 @@ Value matmul_bt(const Value& a, const Value& b) {
 	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) {
 			Tensor grad_a = matmul(grad_out, b.data());
-			a.grad() += sum_to_shape(grad_a, a.data().shape());
+			accumulate_grad(a.grad(), grad_a);
 		}
 		if (b.requires_grad()) {
 			Tensor grad_b = matmul(grad_out, a.data(), true, false);
-			b.grad() += sum_to_shape(grad_b, b.data().shape());
+			accumulate_grad(b.grad(), grad_b);
 		}
 	});
 }
