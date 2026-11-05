@@ -1,0 +1,5 @@
+epoch 0 avg loss 0.4126
+epoch 1 avg loss 0.0910
+epoch 2 avg loss 0.0618
+test accuracy: 98.09% (9809/10000)
+env NN_NUM_THREADS=8 taskset -c 0-7 ./build/native/apps/train_mnist data/mnis  37.43s user 2.25s system 109% cpu 36.217 total
