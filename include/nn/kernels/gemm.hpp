@@ -13,8 +13,9 @@ namespace kernels {
 
 /**
  * Microkernel register tile: MR rows of op(A) by NR columns of op(B). 6 x 16
- * matches the AVX2 microkernel (12 ymm accumulators); the portable path uses
- * the same tile so the packed layout is shared.
+ * matches the AVX2 microkernel (12 ymm accumulators); the SSE2 microkernel
+ * covers it as two 6 x 8 halves (12 xmm accumulators each) and the scalar
+ * one uses it as is, so the packed layout is shared by every path.
  */
 constexpr size_t kMR = 6;
 constexpr size_t kNR = 16;
@@ -59,7 +60,7 @@ void sgemm(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 
 /**
  * Same contract as sgemm, always on the portable scalar microkernel, so
- * tests can exercise it in a native build.
+ * tests can exercise it in any build.
  *
  * Parameters: as sgemm
  *
@@ -72,7 +73,8 @@ void sgemm_portable(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 /**
  * Reports which microkernel sgemm was compiled with
  *
- * Returns bool: true for the AVX2/FMA microkernel, false for the portable one
+ * Returns bool: true for the AVX2/FMA microkernel, false for the SSE2 or the
+ * scalar one
  */
 bool sgemm_uses_avx2();
 

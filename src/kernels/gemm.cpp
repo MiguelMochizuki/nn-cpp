@@ -13,6 +13,9 @@
 #if defined(__AVX2__) && defined(__FMA__)
 #define NN_GEMM_AVX2 1
 #include <immintrin.h>
+#elif defined(__SSE2__)
+#define NN_GEMM_SSE2 1
+#include <emmintrin.h>
 #endif
 
 namespace nn {
@@ -197,8 +200,69 @@ void micro_avx2(size_t kc, const float* ap, const float* bp, float* c, size_t ld
 }
 #endif
 
+#ifdef NN_GEMM_SSE2
 /**
- * Microkernel signature shared by micro_portable and micro_avx2
+ * SSE2 microkernel, same contract as micro_portable. A 6 x 16 tile needs 24
+ * xmm accumulators but there are only 16 registers, so the tile is computed
+ * as two 6 x 8 halves (12 accumulators each), each a full pass over kc that
+ * reads its 8 columns of the shared packed B panel. Edge tiles run on a stack
+ * copy so nothing outside C's mr x nr corner is read or written.
+ *
+ * Parameters: as micro_portable
+ *
+ * Returns void
+ */
+void micro_sse2(size_t kc, const float* ap, const float* bp, float* c, size_t ldc,
+		size_t mr, size_t nr, Store mode) {
+	static_assert(kMR == 6 && kNR == 16, "micro_sse2 is written for a 6 x 16 tile");
+	alignas(16) float buf[kMR * kNR];
+	bool edge = mr < kMR || nr < kNR;
+	float* t = c;
+	size_t ldt = ldc;
+	if (edge) {
+		t = buf;
+		ldt = kNR;
+		if (mode != Store::kOverwrite)
+			for (size_t i = 0; i < mr; ++i)
+				for (size_t j = 0; j < nr; ++j) buf[i * kNR + j] = c[i * ldc + j];
+	}
+	for (size_t h = 0; h < kNR && h < nr; h += 8) {
+		__m128 acc[kMR][2];
+		for (size_t i = 0; i < kMR; ++i) {
+			if (mode == Store::kContinue) {
+				acc[i][0] = _mm_loadu_ps(t + i * ldt + h);
+				acc[i][1] = _mm_loadu_ps(t + i * ldt + h + 4);
+			} else {
+				acc[i][0] = acc[i][1] = _mm_setzero_ps();
+			}
+		}
+		const float* a = ap;
+		const float* b = bp + h;
+		for (size_t p = 0; p < kc; ++p, a += kMR, b += kNR) {
+			__m128 b0 = _mm_load_ps(b), b1 = _mm_load_ps(b + 4);
+			for (size_t i = 0; i < kMR; ++i) {
+				__m128 av = _mm_set1_ps(a[i]);
+				acc[i][0] = _mm_add_ps(acc[i][0], _mm_mul_ps(av, b0));
+				acc[i][1] = _mm_add_ps(acc[i][1], _mm_mul_ps(av, b1));
+			}
+		}
+		for (size_t i = 0; i < kMR; ++i) {
+			if (mode == Store::kAdd) {
+				acc[i][0] = _mm_add_ps(_mm_loadu_ps(t + i * ldt + h), acc[i][0]);
+				acc[i][1] = _mm_add_ps(_mm_loadu_ps(t + i * ldt + h + 4), acc[i][1]);
+			}
+			_mm_storeu_ps(t + i * ldt + h, acc[i][0]);
+			_mm_storeu_ps(t + i * ldt + h + 4, acc[i][1]);
+		}
+	}
+	if (edge)
+		for (size_t i = 0; i < mr; ++i)
+			for (size_t j = 0; j < nr; ++j) c[i * ldc + j] = buf[i * kNR + j];
+}
+#endif
+
+/**
+ * Microkernel signature shared by micro_portable, micro_sse2 and micro_avx2
  */
 using Micro = void (*)(size_t, const float*, const float*, float*, size_t, size_t, size_t, Store);
 
@@ -260,6 +324,8 @@ void sgemm(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 		float* c, size_t ldc, bool accumulate) {
 #ifdef NN_GEMM_AVX2
 	blocked(micro_avx2, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
+#elif defined(NN_GEMM_SSE2)
+	blocked(micro_sse2, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
 #else
 	blocked(micro_portable, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
 #endif
