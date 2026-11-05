@@ -433,3 +433,28 @@ TEST_CASE("BatchNorm 3-step train then eval flow matches a hand-computed referen
 	Value y = bn.forward(Value::leaf(Tensor({1, 1}, 5.0f)));
 	CHECK(y.data().data()[0] == doctest::Approx((5.0f - 2.125f) / std::sqrt(1.375f)));
 }
+
+TEST_CASE("AvgPool2d layer pools and has no parameters") {
+	AvgPool2d pool(2, 2);
+	CHECK(pool.parameters().empty());
+	Value y = pool.forward(Value::leaf(Tensor({1, 1, 2, 2}, std::vector<float>{1, 2, 3, 6})));
+	CHECK(y.data().shape() == std::vector<size_t>{1, 1, 1, 1});
+	CHECK(y.data().data()[0] == doctest::Approx(3.0f));
+}
+
+TEST_CASE("GlobalAvgPool2d equals the manual spatial mean and passes gradcheck") {
+	GlobalAvgPool2d gap;
+	Tensor xt = Tensor::random({2, 3, 4, 5}, -1.0f, 1.0f);
+	Value y = gap.forward(Value::leaf(xt));
+	CHECK(y.data().shape() == std::vector<size_t>{2, 3});
+	for (size_t n = 0; n < 2; n++)
+		for (size_t c = 0; c < 3; c++) {
+			float s = 0.0f;
+			for (size_t i = 0; i < 20; i++) s += xt.data()[(n * 3 + c) * 20 + i];
+			CHECK(y.data().get({n, c}) == doctest::Approx(s / 20.0f));
+		}
+	Tensor wt = Tensor::random({2, 3}, 0.5f, 1.5f);
+	auto f = [&](Value x) { return sum(mul(gap.forward(x), Value::leaf(wt))); };
+	CHECK(gradcheck(f, Value::leaf(xt, true)));
+	CHECK_THROWS_AS(gap.forward(Value::leaf(Tensor({2, 3}, 1.0f))), TensorShapeError);
+}

@@ -862,3 +862,65 @@ TEST_CASE("backward orders a node after all its consumers when paths have differ
 	                       true);
 	CHECK(gradcheck(f, x, 1e-3f, 5e-2f));
 }
+
+TEST_CASE("avgpool2d averages each window, with and without overlap") {
+	Value x = Value::leaf(Tensor({1, 1, 4, 4}, std::vector<float>{
+	                           1, 2, 5, 6,
+	                           3, 4, 7, 8,
+	                           9, 10, 13, 14,
+	                           11, 12, 15, 16}),
+	                       true);
+	Value y = avgpool2d(x, 2, 2);
+	CHECK(y.data().shape() == std::vector<size_t>{1, 1, 2, 2});
+	CHECK(y.data().data() == std::vector<float>{2.5f, 6.5f, 10.5f, 14.5f});
+	Value o = avgpool2d(x, 2, 1);
+	CHECK(o.data().shape() == std::vector<size_t>{1, 1, 3, 3});
+	CHECK(o.data().data() == std::vector<float>{2.5f, 4.5f, 6.5f, 6.5f, 8.5f, 10.5f, 10.5f, 12.5f, 14.5f});
+	sum(o).backward();
+	// corners belong to one window, centre to four: g/4 accumulated
+	CHECK(x.grad().get({0, 0, 0, 0}) == doctest::Approx(0.25f));
+	CHECK(x.grad().get({0, 0, 1, 1}) == doctest::Approx(1.0f));
+	CHECK(x.grad().get({0, 0, 0, 1}) == doctest::Approx(0.5f));
+}
+
+TEST_CASE("avgpool2d gradcheck at several shapes") {
+	for (auto shape : {std::vector<size_t>{1, 1, 2, 2}, std::vector<size_t>{2, 3, 7, 7}, std::vector<size_t>{1, 2, 33, 33}}) {
+		size_t k = shape[2] == 2 ? 2 : 3;
+		size_t s = shape[2] == 7 ? 2 : 1;
+		Tensor w = patterned(avgpool2d(Value::leaf(Tensor(shape, 0.0f)), k, s).data().shape(), 0.77f);
+		auto f = [&](Value x) { return sum(mul(avgpool2d(x, k, s), Value::leaf(w))); };
+		CHECK(gradcheck(f, Value::leaf(patterned(shape, 0.31f), true)));
+	}
+}
+
+TEST_CASE("avgpool2d rejects a kernel larger than the input and bad arguments") {
+	Value x = Value::leaf(Tensor({1, 1, 3, 3}, 1.0f));
+	CHECK_THROWS_AS(avgpool2d(x, 4, 1), TensorShapeError);
+	CHECK_THROWS_AS(avgpool2d(x, 0, 1), TensorShapeError);
+	CHECK_THROWS_AS(avgpool2d(x, 2, 0), TensorShapeError);
+	CHECK_THROWS_AS(avgpool2d(Value::leaf(Tensor({3, 3}, 1.0f)), 2, 1), TensorShapeError);
+}
+
+TEST_CASE("avgpool2d forward and backward are bitwise identical for any thread count") {
+	size_t saved = nn::kernels::num_threads();
+	for (size_t k : {size_t{1}, size_t{2}, size_t{3}}) {
+		for (size_t stride : {size_t{1}, size_t{2}}) {
+			Tensor xv = patterned({7, 3, 12, 9}, 0.31f);
+			std::vector<float> out1, g1;
+			for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
+				nn::kernels::set_num_threads(threads);
+				Value x = Value::leaf(xv, true);
+				Value y = avgpool2d(x, k, stride);
+				sum(y).backward();
+				if (threads == 1) {
+					out1 = y.data().data();
+					g1 = x.grad().data();
+				} else {
+					CHECK(y.data().data() == out1);
+					CHECK(x.grad().data() == g1);
+				}
+			}
+		}
+	}
+	nn::kernels::set_num_threads(saved);
+}

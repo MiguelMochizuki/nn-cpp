@@ -242,11 +242,12 @@ Because every layer's `forward()` is expressed purely in terms of these differen
 |---|---|
 | `nn/tensor.hpp` | `Tensor`; `add`, `sub`, `mul`, `div`, `scale`, `matmul` (free functions) |
 | `nn/autograd/value.hpp` | `Value` — `leaf()`, `node()`, `data()`, `grad()`, `backward()`, `zero_grad()`, `requires_grad()`, `has_grad()` (false for a non-leaf node before `backward()` reaches it, as in PyTorch where such a grad is `None`); `NoGradGuard` (scope that skips graph building, for inference). On a temporary, `data()`/`grad()` return copies, so `model.forward(x).data()` is safe |
-| `nn/autograd/ops.hpp` | Differentiable ops: `add`, `sub`, `mul`, `scale`, `sum`, `transpose`, `reshape`, `matmul`, `matmul_bt` (`a * b^T` without a transpose copy), `relu`, `sigmoid`, `tanh`, `softmax`, `conv2d`, `maxpool2d`, `cross_entropy_loss`, `mse_loss` |
+| `nn/autograd/ops.hpp` | Differentiable ops: `add`, `sub`, `mul`, `scale`, `sum`, `transpose`, `reshape`, `matmul`, `matmul_bt` (`a * b^T` without a transpose copy), `relu`, `sigmoid`, `tanh`, `softmax`, `conv2d`, `maxpool2d`, `avgpool2d`, `cross_entropy_loss`, `mse_loss` |
 | `nn/nn/module.hpp` | `Module` — base interface (`forward()`, `parameters()`) |
 | `nn/nn/linear.hpp` | `Linear(in_features, out_features)` |
 | `nn/nn/conv2d.hpp` | `Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0)` |
-| `nn/nn/pool2d.hpp` | `MaxPool2d(kernel_size, stride)` |
+| `nn/nn/pool2d.hpp` | `MaxPool2d(kernel_size, stride)`, `AvgPool2d(kernel_size, stride)`, `GlobalAvgPool2d()` |
+| `nn/nn/batchnorm.hpp` | `BatchNorm1d(num_features, eps=1e-5, momentum=0.1)`, `BatchNorm2d(...)`; running statistics are buffers saved by checkpoints |
 | `nn/nn/flatten.hpp` | `Flatten` |
 | `nn/nn/activation.hpp` | `ReLU`, `Sigmoid`, `Tanh`, `Softmax(axis)` |
 | `nn/nn/sequential.hpp` | `Sequential` — `add(layer)`, `forward()`, `parameters()` |

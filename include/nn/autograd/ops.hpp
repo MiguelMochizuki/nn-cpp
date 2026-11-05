@@ -210,6 +210,20 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
  */
 Value maxpool2d(const Value& x, size_t kernel_size, size_t stride);
 
+/* Public, differentiable 2D average pooling
+ *
+ * Parameters:
+ * Value x: input, shape {N, C, H, W}
+ * size_t kernel_size: pooling window side length, applied to both spatial dimensions; larger
+ * than H or W (or zero) throws TensorShapeError
+ * size_t stride: pooling stride, applied to both spatial dimensions; zero throws
+ *
+ * Returns Value: shape {N, C, H_out, W_out}, same size rule as maxpool2d; each element is the
+ * mean of its window. Backward adds grad_out / kernel_size^2 to every window element,
+ * accumulating where windows overlap. Results do not depend on thread count
+ */
+Value avgpool2d(const Value& x, size_t kernel_size, size_t stride);
+
 /* Public, differentiable fused log-softmax + negative-log-likelihood loss
  *
  * Parameters:

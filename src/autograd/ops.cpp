@@ -581,6 +581,73 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 	});
 }
 
+Value avgpool2d(const Value& x, size_t kernel_size, size_t stride) {
+	if (x.data().ndim() != 4) {
+		throw TensorShapeError();
+	}
+	if (kernel_size == 0 || stride == 0) {
+		throw TensorShapeError();
+	}
+	size_t N = x.data().shape()[0];
+	size_t C = x.data().shape()[1];
+	size_t H = x.data().shape()[2];
+	size_t W = x.data().shape()[3];
+	if (kernel_size > H || kernel_size > W) {
+		throw TensorShapeError();
+	}
+	Conv2dOutputSize out_size = conv2d_output_size(H, W, kernel_size, kernel_size, stride, 0);
+	size_t h_out = out_size.h_out;
+	size_t w_out = out_size.w_out;
+
+	Tensor result({N, C, h_out, w_out});
+	const float* x_data = x.data().data().data();
+	float* result_data = result.data().data();
+	size_t out_plane = h_out * w_out;
+	float inv_area = 1.0f / static_cast<float>(kernel_size * kernel_size);
+
+	// Each (n, c) plane reads and writes only its own slices, so planes can run on separate threads
+	size_t chunk = std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, out_plane * kernel_size * kernel_size));
+	kernels::parallel_range(N * C, chunk, [=](size_t p_lo, size_t p_hi) {
+		for (size_t p = p_lo; p < p_hi; p++) {
+			const float* plane = x_data + p * H * W;
+			for (size_t oh = 0; oh < h_out; oh++) {
+				for (size_t ow = 0; ow < w_out; ow++) {
+					float acc = 0.0f;
+					for (size_t ph = 0; ph < kernel_size; ph++) {
+						const float* row = plane + (oh * stride + ph) * W + ow * stride;
+						for (size_t pw = 0; pw < kernel_size; pw++) acc += row[pw];
+					}
+					result_data[p * out_plane + oh * w_out + ow] = acc * inv_area;
+				}
+			}
+		}
+	});
+
+	return Value::node(std::move(result), {x}, [x, N, C, H, W, h_out, w_out, kernel_size, stride, inv_area](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		if (x.grad().shape() != x.data().shape()) throw TensorShapeError();
+		const float* g = grad_out.data().data();
+		float* dst = x.grad().data().data();
+		size_t out_plane = h_out * w_out;
+		// Plane p only touches its own input and output slices, so planes write disjoint ranges
+		size_t chunk = std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, out_plane * kernel_size * kernel_size));
+		kernels::parallel_range(N * C, chunk, [=](size_t p_lo, size_t p_hi) {
+			for (size_t p = p_lo; p < p_hi; p++) {
+				float* plane = dst + p * H * W;
+				for (size_t oh = 0; oh < h_out; oh++) {
+					for (size_t ow = 0; ow < w_out; ow++) {
+						float share = g[p * out_plane + oh * w_out + ow] * inv_area;
+						for (size_t ph = 0; ph < kernel_size; ph++) {
+							float* row = plane + (oh * stride + ph) * W + ow * stride;
+							for (size_t pw = 0; pw < kernel_size; pw++) row[pw] += share;
+						}
+					}
+				}
+			}
+		});
+	});
+}
+
 Value cross_entropy_loss(const Value& logits, const Tensor& targets) {
 	const Tensor& logits_data = logits.data();
 	if (logits_data.ndim() != 2) {
