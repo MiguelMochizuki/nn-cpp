@@ -227,11 +227,18 @@ void Tensor::zero_() {
 	std::fill(data_.begin(), data_.end(), 0.0f);
 }
 
-Tensor Tensor::reshape(std::vector<size_t> new_shape) const {
+Tensor Tensor::reshape(std::vector<size_t> new_shape) const& {
 	if (product(new_shape) != data_.size()) {
 		throw TensorShapeError();
 	}
 	return Tensor(std::move(new_shape), data_);
+}
+
+Tensor Tensor::reshape(std::vector<size_t> new_shape) && {
+	if (product(new_shape) != data_.size()) {
+		throw TensorShapeError();
+	}
+	return Tensor(std::move(new_shape), std::move(data_));
 }
 
 Tensor Tensor::transpose(std::vector<size_t> perm) const {

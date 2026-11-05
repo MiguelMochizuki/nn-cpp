@@ -206,7 +206,16 @@ public:
 	 *
 	 * Returns Tensor: new tensor with new_shape; throws TensorShapeError if sizes don't match
 	 */
-	Tensor reshape(std::vector<size_t> new_shape) const;
+	Tensor reshape(std::vector<size_t> new_shape) const&;
+
+	/* Public, reshape a temporary by moving its storage instead of copying it
+	 *
+	 * Parameters:
+	 * vector<size_t> new_shape: new dimension sizes; product must equal size()
+	 *
+	 * Returns Tensor: new tensor with new_shape; throws TensorShapeError if sizes don't match
+	 */
+	Tensor reshape(std::vector<size_t> new_shape) &&;
 
 	/* Public, permute dimensions
 	 *

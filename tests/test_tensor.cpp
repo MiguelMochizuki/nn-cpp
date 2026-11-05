@@ -87,6 +87,20 @@ TEST_CASE("reshape preserves data in row-major order") {
 	CHECK(r.get({2, 1}) == 6.0f);
 }
 
+TEST_CASE("reshape of a temporary keeps data and shape, and leaves the source intact when copied") {
+	for (size_t n : {size_t{1}, size_t{7}, size_t{33}, size_t{257}}) {
+		Tensor t({n});
+		for (size_t i = 0; i < n; i++) t.data()[i] = static_cast<float>(i);
+		Tensor copy = t.reshape({1, n});
+		Tensor moved = Tensor(t).reshape({n, 1});
+		CHECK(copy.shape() == std::vector<size_t>{1, n});
+		CHECK(moved.shape() == std::vector<size_t>{n, 1});
+		CHECK(copy.data() == t.data());
+		CHECK(moved.data() == t.data());
+	}
+	CHECK_THROWS_AS(Tensor({2, 3}).reshape({4, 4}), TensorShapeError);
+}
+
 TEST_CASE("reshape with mismatched size throws") {
 	Tensor t({2, 3});
 	CHECK_THROWS_AS(t.reshape({4, 4}), TensorShapeError);

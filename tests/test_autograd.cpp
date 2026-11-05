@@ -287,6 +287,21 @@ TEST_CASE("tanh gradcheck") {
 	CHECK(gradcheck(f, x));
 }
 
+TEST_CASE("sigmoid and tanh backward use the stored forward value") {
+	Value x = Value::leaf(Tensor({3}, std::vector<float>{-1.0f, 0.0f, 2.0f}), true);
+	Value s = sigmoid(x);
+	Value t = tanh(x);
+	sum(s + t).backward();
+	for (size_t i = 0; i < 3; i++) {
+		float v = x.data().data()[i];
+		float sv = 1.0f / (1.0f + std::exp(-v));
+		float tv = std::tanh(v);
+		CHECK(s.data().data()[i] == doctest::Approx(sv));
+		CHECK(t.data().data()[i] == doctest::Approx(tv));
+		CHECK(x.grad().data()[i] == doctest::Approx(sv * (1.0f - sv) + 1.0f - tv * tv));
+	}
+}
+
 TEST_CASE("softmax rows sum to one") {
 	Value x = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 2, 3, 1, 1, 1}), true);
 	Value y = softmax(x, 1);

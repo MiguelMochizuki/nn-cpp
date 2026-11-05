@@ -15,7 +15,7 @@ namespace {
 size_t g_live_node_count = 0;
 }
 
-NodeImpl::NodeImpl(Tensor d, bool rg) : data(d), grad(Tensor(d.shape(), 0.0f)), requires_grad(rg) {
+NodeImpl::NodeImpl(Tensor d, bool rg) : data(std::move(d)), grad(data.shape(), 0.0f), requires_grad(rg) {
 	g_live_node_count++;
 }
 

@@ -32,7 +32,7 @@ Tensor sum_to_shape(const Tensor& grad, const std::vector<size_t>& target_shape)
 			Tensor reduced = result.sum(static_cast<int>(i));
 			std::vector<size_t> reshaped = reduced.shape();
 			reshaped.insert(reshaped.begin() + i, 1);
-			result = reduced.reshape(reshaped);
+			result = std::move(reduced).reshape(reshaped);
 		}
 	}
 	return result;
@@ -162,7 +162,7 @@ Tensor insert_axis(const Tensor& t, int axis) {
 
 Value add(const Value& a, const Value& b) {
 	Tensor result = add(a.data(), b.data());
-	return Value::node(result, {a, b}, [a, b](const Tensor& grad_out) {
+	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) a.grad() += sum_to_shape(grad_out, a.data().shape());
 		if (b.requires_grad()) b.grad() += sum_to_shape(grad_out, b.data().shape());
 	});
@@ -170,7 +170,7 @@ Value add(const Value& a, const Value& b) {
 
 Value sub(const Value& a, const Value& b) {
 	Tensor result = sub(a.data(), b.data());
-	return Value::node(result, {a, b}, [a, b](const Tensor& grad_out) {
+	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) a.grad() += sum_to_shape(grad_out, a.data().shape());
 		if (b.requires_grad()) b.grad() -= sum_to_shape(grad_out, b.data().shape());
 	});
@@ -178,7 +178,7 @@ Value sub(const Value& a, const Value& b) {
 
 Value mul(const Value& a, const Value& b) {
 	Tensor result = mul(a.data(), b.data());
-	return Value::node(result, {a, b}, [a, b](const Tensor& grad_out) {
+	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) {
 			a.grad() += sum_to_shape(mul(grad_out, b.data()), a.data().shape());
 		}
@@ -190,7 +190,7 @@ Value mul(const Value& a, const Value& b) {
 
 Value scale(const Value& a, float scalar) {
 	Tensor result = scale(a.data(), scalar);
-	return Value::node(result, {a}, [a, scalar](const Tensor& grad_out) {
+	return Value::node(std::move(result), {a}, [a, scalar](const Tensor& grad_out) {
 		if (a.requires_grad()) a.grad() += scale(grad_out, scalar);
 	});
 }
@@ -199,7 +199,7 @@ Value sum(const Value& x) {
 	float total = 0.0f;
 	for (float v : x.data().data()) total += v;
 	Tensor result({1}, total);
-	return Value::node(result, {x}, [x](const Tensor& grad_out) {
+	return Value::node(std::move(result), {x}, [x](const Tensor& grad_out) {
 		if (x.requires_grad()) {
 			Tensor ones(x.data().shape(), grad_out.data()[0]);
 			x.grad() += ones;
@@ -211,7 +211,7 @@ Value transpose(const Value& x, std::vector<size_t> perm) {
 	Tensor result = x.data().transpose(perm);
 	std::vector<size_t> inverse(perm.size());
 	for (size_t i = 0; i < perm.size(); i++) inverse[perm[i]] = i;
-	return Value::node(result, {x}, [x, inverse](const Tensor& grad_out) {
+	return Value::node(std::move(result), {x}, [x, inverse](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
 		x.grad() += grad_out.transpose(inverse);
 	});
@@ -220,7 +220,7 @@ Value transpose(const Value& x, std::vector<size_t> perm) {
 Value reshape(const Value& x, std::vector<size_t> new_shape) {
 	Tensor result = x.data().reshape(new_shape);
 	std::vector<size_t> orig_shape = x.data().shape();
-	return Value::node(result, {x}, [x, orig_shape](const Tensor& grad_out) {
+	return Value::node(std::move(result), {x}, [x, orig_shape](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
 		x.grad() += grad_out.reshape(orig_shape);
 	});
@@ -228,7 +228,7 @@ Value reshape(const Value& x, std::vector<size_t> new_shape) {
 
 Value matmul(const Value& a, const Value& b) {
 	Tensor result = matmul(a.data(), b.data());
-	return Value::node(result, {a, b}, [a, b](const Tensor& grad_out) {
+	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) {
 			Tensor grad_a = matmul(grad_out, b.data(), false, true);
 			a.grad() += sum_to_shape(grad_a, a.data().shape());
@@ -242,7 +242,7 @@ Value matmul(const Value& a, const Value& b) {
 
 Value matmul_bt(const Value& a, const Value& b) {
 	Tensor result = matmul(a.data(), b.data(), false, true);
-	return Value::node(result, {a, b}, [a, b](const Tensor& grad_out) {
+	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
 		if (a.requires_grad()) {
 			Tensor grad_a = matmul(grad_out, b.data());
 			a.grad() += sum_to_shape(grad_a, a.data().shape());
@@ -257,7 +257,7 @@ Value matmul_bt(const Value& a, const Value& b) {
 Value relu(const Value& x) {
 	Tensor result = x.data();
 	for (float& v : result.data()) v = v > 0.0f ? v : 0.0f;
-	return Value::node(result, {x}, [x](const Tensor& grad_out) {
+	return Value::node(std::move(result), {x}, [x](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
 		Tensor local_grad(x.data().shape());
 		for (size_t i = 0; i < local_grad.size(); i++) {
@@ -270,7 +270,7 @@ Value relu(const Value& x) {
 Value sigmoid(const Value& x) {
 	Tensor result = x.data();
 	for (float& v : result.data()) v = 1.0f / (1.0f + std::exp(-v));
-	return Value::node(result, {x}, [x, result](const Tensor& grad_out) {
+	auto backward_fn = [x, result](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
 		Tensor local_grad(result.shape());
 		for (size_t i = 0; i < local_grad.size(); i++) {
@@ -278,13 +278,14 @@ Value sigmoid(const Value& x) {
 			local_grad.data()[i] = grad_out.data()[i] * s * (1.0f - s);
 		}
 		x.grad() += local_grad;
-	});
+	};
+	return Value::node(std::move(result), {x}, std::move(backward_fn));
 }
 
 Value tanh(const Value& x) {
 	Tensor result = x.data();
 	for (float& v : result.data()) v = std::tanh(v);
-	return Value::node(result, {x}, [x, result](const Tensor& grad_out) {
+	auto backward_fn = [x, result](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
 		Tensor local_grad(result.shape());
 		for (size_t i = 0; i < local_grad.size(); i++) {
@@ -292,7 +293,8 @@ Value tanh(const Value& x) {
 			local_grad.data()[i] = grad_out.data()[i] * (1.0f - t * t);
 		}
 		x.grad() += local_grad;
-	});
+	};
+	return Value::node(std::move(result), {x}, std::move(backward_fn));
 }
 
 Value softmax(const Value& x, int axis) {
@@ -303,13 +305,14 @@ Value softmax(const Value& x, int axis) {
 	Tensor sum_val = insert_axis(exp_val.sum(axis), axis);
 	Tensor result = div(exp_val, sum_val);
 
-	return Value::node(result, {x}, [x, result, axis](const Tensor& grad_out) {
+	auto backward_fn = [x, result, axis](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
 		Tensor prod = mul(grad_out, result);
 		Tensor sum_prod = insert_axis(prod.sum(axis), axis);
 		Tensor local_grad = mul(result, sub(grad_out, sum_prod));
 		x.grad() += local_grad;
-	});
+	};
+	return Value::node(std::move(result), {x}, std::move(backward_fn));
 }
 
 Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride, int padding) {
@@ -353,13 +356,13 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
 			}
 		}
 	}
-	Tensor result = out_biased.reshape({N, Cout, h_out, w_out});
+	Tensor result = std::move(out_biased).reshape({N, Cout, h_out, w_out});
 
 	std::vector<size_t> x_shape = x.data().shape();
 
 	return Value::node(
 		result, {x, weight, bias},
-		[x, weight, bias, col, x_shape, Cout, Cin, kh, kw, stride, padding, h_out, w_out](
+		[x, weight, bias, col = std::move(col), x_shape, Cout, Cin, kh, kw, stride, padding, h_out, w_out](
 			const Tensor& grad_out) {
 			Tensor grad_out_mat = grad_out.reshape({grad_out.shape()[0], Cout, h_out * w_out});
 
@@ -433,7 +436,7 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 	}
 
 	std::vector<size_t> x_shape = x.data().shape();
-	return Value::node(result, {x}, [x, argmax, x_shape](const Tensor& grad_out) {
+	return Value::node(std::move(result), {x}, [x, argmax, x_shape](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
 		Tensor grad_x(x_shape);
 		for (size_t i = 0; i < grad_out.size(); i++) {
@@ -474,7 +477,7 @@ Value cross_entropy_loss(const Value& logits, const Tensor& targets) {
 	total_loss /= static_cast<float>(N);
 
 	Tensor result({1}, total_loss);
-	return Value::node(result, {logits}, [logits, softmax_val, targets, N, C](const Tensor& grad_out) {
+	return Value::node(std::move(result), {logits}, [logits, softmax_val, targets, N, C](const Tensor& grad_out) {
 		if (!logits.requires_grad()) return;
 		Tensor local_grad = softmax_val;
 		for (size_t n = 0; n < N; n++) {
