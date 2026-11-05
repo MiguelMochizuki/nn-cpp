@@ -42,3 +42,32 @@ Tensor scaled(const Tensor& a, float scale);
 ```
 
 Trivial getters need no block. Comments inside functions say why, not what.
+
+### Python
+
+Google-style docstrings. Every module gets a docstring; add `Args:`/`Returns:` (and `Raises:` where it applies) to functions with non-obvious logic. Trivial helpers need none. Type hints carry the types, the docstring carries the meaning.
+
+```python
+def resize_image(image: Image, width: int, height: int, keep_aspect: bool = True) -> Image:
+    """Resize an image to the given dimensions.
+
+    Args:
+        image: The source image to resize.
+        width: Target width in pixels.
+        height: Target height in pixels.
+        keep_aspect: If True, preserve the original aspect ratio and
+            letterbox rather than stretch.
+
+    Returns:
+        A new Image at the requested size.
+
+    Raises:
+        ValueError: If width or height is not positive.
+    """
+```
+
+Module docstring:
+
+```python
+"""Utilities for resizing and format-converting images."""
+```
