@@ -24,3 +24,7 @@ if(NN_BUILD_TESTS)
 	target_include_directories(bench_tests PRIVATE bench)
 	doctest_discover_tests(bench_tests)
 endif()
+
+add_executable(bench bench/bench.cpp bench/workloads.cpp bench/runner.cpp)
+target_link_libraries(bench PRIVATE nn_core)
+target_include_directories(bench PRIVATE bench)
