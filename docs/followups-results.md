@@ -77,3 +77,41 @@ The 7.8 ms vs 5.8 ms cnn_mnist penalty and the slower 2048 matmul seen in phase 
 Portable, where a cap would hurt: unpinned mlp_wide is 21.30 ms at 12 threads against 29.47 ms at 4 (cap would be 38% slower), mlp_adam 23.34 against 31.17 ms (34% slower). A cap at physical cores (4 here, read from thread_siblings_list) or an AVX2-only cap would therefore either do nothing measurable on native or cost the portable build; an AVX2-conditional cap would buy at most ~3% on one native row, which is not worth a topology parser plus a sysfs dependency. Pinned numbers agree (native pinned t=12 vs t=4: cnn_mnist 9% slower, but that is 12 threads on 8 CPUs, a case the default does not produce unless the user pins).
 
 `NN_NUM_THREADS` and `set_num_threads` still override the default and the documentation in `include/nn/kernels/parallel.hpp` and README.md (default is `hardware_concurrency()`) stays accurate. Users who see SMT contention on a native build can set `NN_NUM_THREADS` to the physical core count.
+
+## Packing, zero-fill and backward allocations
+
+Method: `NN_NUM_THREADS=8 taskset -c 0-7 apps/bench --suite workloads`, 3 calls per cell interleaved old/new, median of the 3 `total_ms` (max/min-1 spread in parentheses). Old is head df02721 built in a separate worktree (native and portable); new is the packing commit. Machine idle apart from a browser (CPU 5% busy during the runs). Raw CSVs: `docs/baseline/followups/packb-native/`, `packb-portable/`, and `packb-infer-*` (5 interleaved calls of `--workload infer_nograd_b256 --runs 40`, used to settle a 3% reading).
+
+Fresh `perf record -g` on head (`apps/bench/profile.sh`, native, 8 threads), share of samples:
+
+| candidate | cnn_mnist | mlp_wide | cnn_large | verdict |
+|---|---|---|---|---|
+| B zero-fill (`__memset_avx2_unaligned_erms`) | 8.4% | 1.9% | 6.3% | stopped (public API) |
+| A serial B pack (`blocked` self time) | 7.1% | 1.9% | 3.0% | kept |
+| C softmax/CE/sigmoid/tanh backward | 0 | 0 | 0 | skipped |
+
+```
+native (ms)        old              new
+mlp_wide      14.951( 1.2%)   14.180( 1.0%)   -5.2%
+cnn_mnist      2.655( 3.2%)    2.640( 0.9%)   noise
+cnn_large    252.423( 1.0%)  250.217( 0.5%)   noise
+mlp_adam      17.638(13.6%)   16.391( 1.1%)   -7.1%
+infer_b1       0.068           0.067           noise
+infer_b256    11.358( 3.0%)   11.689( 2.8%)   see below
+
+portable (ms)      old              new
+mlp_wide      28.002( 1.4%)   26.557( 0.7%)   -5.2%
+cnn_mnist      3.920( 0.6%)    3.880( 1.4%)   noise
+cnn_large    303.907( 0.5%)  304.099( 0.4%)   noise
+mlp_adam      29.891( 0.7%)   29.013( 0.8%)   -2.9%
+infer_b1       0.094           0.093           noise
+infer_b256    14.223( 1.7%)   14.588( 1.7%)   see below
+```
+
+infer_nograd_b256 read +2.9% (native) and +2.6% (portable) in that sweep; the 5-call recheck gives native 11.373 -> 11.408 ms (+0.3%) and portable 14.287 -> 14.308 ms (+0.1%), so no slowdown.
+
+**A. Parallel B packing: kept.** `pack_b` is called per range of kNR column panels through `parallel_range` (at least 8 panels per chunk; below that, or when the product is serial, it stays on the caller). Writes are disjoint runs of `b_pack` and pure copies, so results are bitwise identical for any thread count (existing determinism test plus a new test with n = kNC+37, k = kKC+5, both `trans_b`). Threshold sweep (native, 3-5 runs): 4 and 8 panels tie, 1 panel was slower on cnn_large (260.5 vs 254.2 ms); 8 chosen. Only the two large-matmul rows move; cnn_mnist's packs are too small to split.
+
+**B. Zero-fill of fresh tensors: stopped, no code.** `Tensor` stores a `std::vector<float>` and `data()` returns `std::vector<float>&` in the public header; a vector of size n is always value-initialised, and the only way to skip that is a different storage type (e.g. a default-init allocator), which changes the public `data()` signature. Per the brief this is reported, not implemented. Share to recover if the API is ever changed: about 8% of cnn_mnist and 6% of cnn_large samples.
+
+**C. Backward closures of softmax/CE/sigmoid/tanh: skipped.** None of the bench workloads call these ops (the workloads use relu, maxpool, linear, conv, sum), so their share in all three profiles is 0, under the 1% bar.

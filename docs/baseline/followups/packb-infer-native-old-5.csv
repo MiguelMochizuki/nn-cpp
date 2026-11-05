@@ -1,0 +1,2 @@
+config,label,threads,benchmark,size,forward_ms,backward_ms,optim_ms,total_ms,gflops,spread,runs
+native,pinned,8,infer_nograd_b256,,11.517,0,0,11.517,,0.0159427,40
