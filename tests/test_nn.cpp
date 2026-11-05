@@ -10,12 +10,15 @@
 #include "nn/nn/conv2d.hpp"
 #include "nn/nn/pool2d.hpp"
 #include "nn/nn/flatten.hpp"
+#include "nn/nn/dropout.hpp"
+#include "nn/random.hpp"
 #include "nn/nn/activation.hpp"
 #include "nn/nn/sequential.hpp"
 #include "nn/autograd/ops.hpp"
 
 #include <cmath>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -236,4 +239,77 @@ TEST_CASE("Sequential eval and train reach every child") {
 	for (auto* k : kids) {
 		CHECK(k->flag());
 	}
+}
+
+namespace {
+
+std::vector<float> dropout_mask(Dropout& d, size_t n) {
+	return d.forward(Value::leaf(Tensor({n}, 1.0f))).data().data();
+}
+
+}  // namespace
+
+TEST_CASE("Dropout eval and p = 0 return the input Value itself") {
+	manual_seed(1);
+	Value x = Value::leaf(Tensor({4}, 2.0f), true);
+	Dropout d(0.5f);
+	d.eval();
+	Value same = d.forward(x);
+	CHECK(&same.data() == &x.data());
+	Dropout none(0.0f);
+	Value same0 = none.forward(x);
+	CHECK(&same0.data() == &x.data());
+	CHECK_THROWS_AS(Dropout(-0.1f), std::invalid_argument);
+	CHECK_THROWS_AS(Dropout(1.5f), std::invalid_argument);
+}
+
+TEST_CASE("Dropout with p = 1 gives finite zeros and zero gradient") {
+	manual_seed(1);
+	Dropout d(1.0f);
+	Value x = Value::leaf(Tensor({6}, 3.0f), true);
+	Value y = d.forward(x);
+	for (float v : y.data().data()) CHECK(v == 0.0f);
+	sum(y).backward();
+	for (float g : x.grad().data()) CHECK(g == 0.0f);
+}
+
+TEST_CASE("Dropout in train mode keeps the mean and drops about p") {
+	manual_seed(1);
+	Dropout d(0.3f);
+	std::vector<float> out = dropout_mask(d, 100000);
+	double total = 0;
+	size_t zeros = 0;
+	for (float v : out) {
+		total += v;
+		if (v == 0.0f) zeros++;
+	}
+	CHECK(total / out.size() == doctest::Approx(1.0).epsilon(0.02));
+	CHECK(static_cast<double>(zeros) / out.size() == doctest::Approx(0.3).epsilon(0.02));
+}
+
+TEST_CASE("Dropout masks are reproducible and unaffected by eval toggling") {
+	manual_seed(5);
+	Dropout a(0.5f);
+	auto a1 = dropout_mask(a, 64);
+	auto a2 = dropout_mask(a, 64);
+	manual_seed(5);
+	Dropout b(0.5f);
+	CHECK(dropout_mask(b, 64) == a1);
+	b.eval();
+	dropout_mask(b, 64);
+	b.train();
+	CHECK(dropout_mask(b, 64) == a2);
+	CHECK(a1 != a2);
+}
+
+TEST_CASE("Dropout gradcheck with a fixed seed") {
+	Value x = Value::leaf(Tensor({7, 3}, std::vector<float>(21, 0.5f)), true);
+	auto f = [](Value a) {
+		manual_seed(3);
+		Dropout d(0.4f);
+		std::vector<float> w(21);
+		for (size_t i = 0; i < w.size(); i++) w[i] = 1.0f + 0.1f * static_cast<float>(i);
+		return sum(mul(d.forward(a), Value::leaf(Tensor({7, 3}, w))));
+	};
+	CHECK(gradcheck(f, x));
 }
