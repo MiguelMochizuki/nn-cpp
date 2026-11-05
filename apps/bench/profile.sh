@@ -6,7 +6,7 @@ bd=$1 wl=$2 out=$3
 mkdir -p "$out"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-if ! perf record -g -o "$tmp/perf.data" -- "$bd/apps/bench" --out "$tmp/p.csv" --suite workloads --workload "$wl" \
+if ! perf record -g -o "$tmp/perf.data" -- taskset -c 0-7 "$bd/apps/bench" --out "$tmp/p.csv" --suite workloads --workload "$wl" \
 	>"$tmp/rec.log" 2>&1; then
 	cat "$tmp/rec.log" >&2
 	if grep -q '^bench: ' "$tmp/rec.log"; then

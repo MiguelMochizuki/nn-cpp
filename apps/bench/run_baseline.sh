@@ -16,7 +16,7 @@ for cfg in native portable; do
 	for n in 1 2 4 8; do
 		f=$out/$cfg-pinned-t$n.csv
 		echo "== $f"
-		NN_NUM_THREADS=$n taskset -c 0-$((n - 1)) "$bin" --out "$f" --label pinned "${extra[@]}"
+		NN_NUM_THREADS=$n taskset -c 0-7 "$bin" --out "$f" --label pinned "${extra[@]}"
 	done
 	f=$out/$cfg-unpinned-t12.csv
 	echo "== $f"
