@@ -850,3 +850,15 @@ TEST_CASE("axis reductions are bitwise identical at 1 and 8 threads") {
 	nn::kernels::set_num_threads(saved);
 	CHECK(serial == parallel);
 }
+
+TEST_CASE("backward orders a node after all its consumers when paths have different depths") {
+	// c feeds both mul(c, c) -> mean (a deeper path) and the final mul directly
+	auto f = [](Value x) {
+		Value c = mul(x, x);
+		return sum(mul(c, mean(mul(c, c), 0, true)));
+	};
+	Value x = Value::leaf(Tensor({7, 3}, std::vector<float>{0.3f, -0.8f, 0.5f, 0.9f, -0.2f, 0.7f, -0.6f, 0.1f, 0.4f, -0.9f, 0.8f,
+	                                                       -0.3f, 0.2f, -0.5f, 0.6f, 0.7f, -0.1f, -0.4f, 0.35f, 0.45f, -0.75f}),
+	                       true);
+	CHECK(gradcheck(f, x, 1e-3f, 5e-2f));
+}
