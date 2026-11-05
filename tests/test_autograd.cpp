@@ -894,6 +894,14 @@ TEST_CASE("avgpool2d gradcheck at several shapes") {
 	}
 }
 
+TEST_CASE("avgpool2d gradcheck with 257 batch entries and 257 channels") {
+	for (auto shape : {std::vector<size_t>{257, 1, 4, 4}, std::vector<size_t>{1, 257, 4, 4}}) {
+		Tensor w = patterned(avgpool2d(Value::leaf(Tensor(shape, 0.0f)), 2, 2).data().shape(), 0.77f);
+		auto f = [&](Value x) { return sum(mul(avgpool2d(x, 2, 2), Value::leaf(w))); };
+		CHECK(gradcheck(f, Value::leaf(patterned(shape, 0.31f), true)));
+	}
+}
+
 TEST_CASE("avgpool2d rejects a kernel larger than the input and bad arguments") {
 	Value x = Value::leaf(Tensor({1, 1, 3, 3}, 1.0f));
 	CHECK_THROWS_AS(avgpool2d(x, 4, 1), TensorShapeError);

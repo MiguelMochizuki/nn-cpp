@@ -16,6 +16,8 @@
 #include "nn/nn/activation.hpp"
 #include "nn/nn/sequential.hpp"
 #include "nn/autograd/ops.hpp"
+#include "nn/optim/adam.hpp"
+#include "nn/optim/sgd.hpp"
 
 #include <cmath>
 #include <memory>
@@ -419,6 +421,106 @@ TEST_CASE("BatchNorm gradchecks input, weight and bias in train mode") {
 			CHECK(gradcheck(f_p, params[pi]));
 		}
 	}
+}
+
+namespace {
+
+// Fraction of rows whose argmax logit equals the label
+float accuracy_of(const Value& logits, const Tensor& labels) {
+	size_t n = logits.data().shape()[0];
+	size_t k = logits.data().shape()[1];
+	size_t hits = 0;
+	for (size_t i = 0; i < n; i++) {
+		size_t best = 0;
+		for (size_t c = 1; c < k; c++) {
+			if (logits.data().get({i, c}) > logits.data().get({i, best})) best = c;
+		}
+		if (static_cast<float>(best) == labels.get({i})) hits++;
+	}
+	return static_cast<float>(hits) / static_cast<float>(n);
+}
+
+}  // namespace
+
+TEST_CASE("BatchNorm1d network learns a planted linear rule, in train and eval mode") {
+	manual_seed(11);
+	// features are offset and scaled so the normalisation has real work to do; label = (f0 - f1 > 0)
+	auto make = [](size_t n) {
+		Tensor x = Tensor::random({n, 4}, -1.0f, 1.0f);
+		Tensor labels({n}, 0.0f);
+		for (size_t i = 0; i < n; i++) {
+			float* row = x.data().data() + i * 4;
+			labels.data()[i] = row[0] - row[1] > 0.0f ? 1.0f : 0.0f;
+			for (size_t j = 0; j < 4; j++) row[j] = 3.0f * row[j] + 5.0f;
+		}
+		return std::make_pair(x, labels);
+	};
+	for (bool use_adam : {false, true}) {
+		Sequential model;
+		model.add(std::make_unique<Linear>(4, 16));
+		model.add(std::make_unique<BatchNorm1d>(16));
+		model.add(std::make_unique<ReLU>());
+		model.add(std::make_unique<Linear>(16, 2));
+		std::unique_ptr<Optimizer> opt;
+		if (use_adam) opt = std::make_unique<Adam>(model.parameters(), 0.02f);
+		else opt = std::make_unique<SGD>(model.parameters(), 0.1f, 0.9f);
+
+		auto [x, labels] = make(128);
+		float loss_value = 1e9f;
+		for (int step = 0; step < 300; step++) {
+			Value loss = cross_entropy_loss(model.forward(Value::leaf(x)), labels);
+			opt->zero_grad();
+			loss.backward();
+			opt->step();
+			loss_value = loss.data().data()[0];
+		}
+		CHECK(loss_value < 0.2f);
+		CHECK(accuracy_of(model.forward(Value::leaf(x)), labels) > 0.95f);
+
+		model.eval();
+		auto [xt, test_labels] = make(256);
+		CHECK(accuracy_of(model.forward(Value::leaf(xt)), test_labels) > 0.90f);
+	}
+}
+
+TEST_CASE("BatchNorm2d network learns which half of an image is bright, in train and eval mode") {
+	manual_seed(12);
+	auto make = [](size_t n) {
+		Tensor x = Tensor::random({n, 1, 8, 8}, 0.0f, 0.3f);
+		Tensor labels({n}, 0.0f);
+		Tensor coin = Tensor::random({n}, 0.0f, 1.0f);
+		for (size_t i = 0; i < n; i++) {
+			bool right = coin.data()[i] > 0.5f;
+			labels.data()[i] = right ? 1.0f : 0.0f;
+			for (size_t r = 0; r < 8; r++) {
+				for (size_t c = right ? 4 : 0; c < (right ? 8u : 4u); c++) x.data()[((i * 8) + r) * 8 + c] += 0.7f;
+			}
+		}
+		return std::make_pair(x, labels);
+	};
+	Sequential model;
+	model.add(std::make_unique<Conv2d>(1, 4, 3, 1, 1));
+	model.add(std::make_unique<BatchNorm2d>(4));
+	model.add(std::make_unique<ReLU>());
+	model.add(std::make_unique<GlobalAvgPool2d>());
+	model.add(std::make_unique<Linear>(4, 2));
+	Adam opt(model.parameters(), 0.02f);
+
+	auto [x, labels] = make(64);
+	float loss_value = 1e9f;
+	for (int step = 0; step < 200; step++) {
+		Value loss = cross_entropy_loss(model.forward(Value::leaf(x)), labels);
+		opt.zero_grad();
+		loss.backward();
+		opt.step();
+		loss_value = loss.data().data()[0];
+	}
+	CHECK(loss_value < 0.3f);
+	CHECK(accuracy_of(model.forward(Value::leaf(x)), labels) > 0.95f);
+
+	model.eval();
+	auto [xt, test_labels] = make(64);
+	CHECK(accuracy_of(model.forward(Value::leaf(xt)), test_labels) > 0.90f);
 }
 
 TEST_CASE("BatchNorm 3-step train then eval flow matches a hand-computed reference") {
