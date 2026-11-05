@@ -17,6 +17,9 @@ namespace nn {
  * FER-2013 loaded fully into memory. Each pixels field holds image_size^2 space-separated
  * integers 0-255, scaled to [0, 1]. No data is bundled with the library.
  *
+ * Memory: pixels are stored as float, about 4 bytes per pixel, so the full 35k-row, 48x48 file
+ * takes roughly 320 MB. Parser limits: multi-line quoted fields and a UTF-8 BOM are not supported.
+ *
  * Attributes:
  * size_t image_size_: side length of the square images
  * vector<float> pixels_: all images, row-major, image_size_^2 floats each
