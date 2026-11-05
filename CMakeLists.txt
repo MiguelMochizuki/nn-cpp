@@ -10,6 +10,7 @@ endif()
 
 option(NN_BUILD_TESTS "Build unit tests" ON)
 option(NN_BUILD_APPS "Build example apps" ON)
+option(NN_NATIVE "Compile with -march=native" OFF)
 
 add_library(nn_core STATIC
 	src/tensor.cpp
@@ -27,6 +28,13 @@ add_library(nn_core STATIC
 )
 
 target_include_directories(nn_core PUBLIC include)
+
+if(NN_NATIVE)
+	target_compile_options(nn_core PUBLIC -march=native)
+	target_compile_definitions(nn_core PUBLIC NN_NATIVE_BUILD=1)
+else()
+	target_compile_definitions(nn_core PUBLIC NN_NATIVE_BUILD=0)
+endif()
 
 if(NN_BUILD_TESTS)
 	enable_testing()
