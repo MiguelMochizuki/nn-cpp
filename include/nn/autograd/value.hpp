@@ -135,7 +135,8 @@ public:
 	 *
 	 * Parameters: none
 	 *
-	 * Returns Tensor&: reference to the node's grad
+	 * Returns Tensor&: reference to the node's grad. For a non-leaf node it is
+	 * an empty placeholder (shape {0}) until backward() reaches that node
 	 */
 	Tensor& grad() const&;
 

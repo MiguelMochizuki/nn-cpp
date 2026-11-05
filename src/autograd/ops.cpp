@@ -318,6 +318,7 @@ Value relu(const Value& x) {
 	});
 	return Value::node(std::move(result), {x}, [x](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
+		if (x.grad().shape() != grad_out.shape() || x.data().shape() != grad_out.shape()) throw TensorShapeError();
 		const float* in = x.data().data().data();
 		const float* g = grad_out.data().data();
 		float* dst = x.grad().data().data();
@@ -421,7 +422,7 @@ Value conv2d(const Value& x, const Value& weight, const Value& bias, int stride,
 	std::vector<size_t> x_shape = x.data().shape();
 
 	return Value::node(
-		result, {x, weight, bias},
+		std::move(result), {x, weight, bias},
 		[x, weight, bias, col = std::move(col), x_shape, Cout, Cin, kh, kw, stride, padding, h_out, w_out](
 			const Tensor& grad_out) {
 			Tensor grad_out_mat = grad_out.reshape({grad_out.shape()[0], Cout, h_out * w_out});
@@ -498,6 +499,7 @@ Value maxpool2d(const Value& x, size_t kernel_size, size_t stride) {
 
 	return Value::node(std::move(result), {x}, [x, argmax = std::move(argmax), N, C, out_plane](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
+		if (x.grad().shape() != x.data().shape()) throw TensorShapeError();
 		const float* g = grad_out.data().data();
 		float* dst = x.grad().data().data();
 		const size_t* arg = argmax.data();

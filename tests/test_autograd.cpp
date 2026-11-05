@@ -718,3 +718,15 @@ TEST_CASE("NoGradGuard restores tracking when it goes out of scope, including wh
 	}
 	CHECK(relu(w).requires_grad());
 }
+
+TEST_CASE("relu and maxpool2d backward reject a leaf whose data was reshaped after the forward pass") {
+	Value x = Value::leaf(Tensor({3}, 1.0f), true);
+	Value y = sum(relu(x));
+	x.data() = Tensor({5000}, 1.0f);
+	CHECK_THROWS_AS(y.backward(), TensorShapeError);
+
+	Value p = Value::leaf(Tensor({1, 1, 2, 2}, 1.0f), true);
+	Value q = sum(maxpool2d(p, 2, 2));
+	p.data() = Tensor({1, 1, 4, 4}, 1.0f);
+	CHECK_THROWS_AS(q.backward(), TensorShapeError);
+}
