@@ -1,0 +1,8 @@
+config,label,threads,benchmark,size,forward_ms,backward_ms,optim_ms,total_ms,gflops,spread,runs
+native,unpinned,8,xor,,0.001766,0.003743,0.000189,0.005624,,0.097973,15
+native,unpinned,8,mlp_wide,,4.36619,9.82474,1.05872,15.3385,,0.0642595,15
+native,unpinned,8,cnn_mnist,,1.04008,1.55469,0.064133,2.65252,,0.0845717,15
+native,unpinned,8,cnn_large,,119.691,134.038,0.341392,254.031,,0.0115176,15
+native,unpinned,8,mlp_adam,,7.03389,10.4964,5.36982,24.357,,0.359775,15
+native,unpinned,8,infer_nograd_b1,,0.066735,0,0,0.066735,,0.0136585,15
+native,unpinned,8,infer_nograd_b256,,11.1772,0,0,11.1772,,0.0471936,15
