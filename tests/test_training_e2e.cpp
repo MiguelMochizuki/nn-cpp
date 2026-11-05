@@ -151,7 +151,7 @@ TEST_CASE("e2e: CNN stack learns the bright-quadrant task and is deterministic")
 
 TEST_CASE("e2e: resuming from a checkpoint continues identically") {
 	ThreadScope threads;
-	const std::string path = (std::filesystem::temp_directory_path() / "nn_e2e_resume.ckpt").string();
+	const std::string path = (std::filesystem::temp_directory_path() / ("nn_e2e_resume_" + std::to_string(std::random_device{}()) + ".ckpt")).string();
 	TensorDataset data = make_data(64);
 	auto batch = [&](size_t b) {
 		Tensor x({16, 1, SIDE, SIDE}), y({16});
