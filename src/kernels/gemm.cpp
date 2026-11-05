@@ -293,9 +293,13 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 	thread_local AlignedBuffer b_buf;
 	float* b_pack = b_buf.get(kKC * kNC);
 	const size_t blocks = (m + kMC - 1) / kMC;
-	// Below this many multiply-adds the fork/join cost outweighs the gain
-	constexpr size_t kParallelMin = size_t(1) << 18;
-	const bool serial = m * n * k < kParallelMin;
+	// Below this many multiply-adds (about a 101^3 product) the fork/join cost outweighs the gain
+	constexpr size_t kParallelMin = size_t(1) << 20;
+	// Work split targets: chunks per thread, and the narrowest column run (in kNR panels)
+	constexpr size_t kChunksPerThread = 2;
+	constexpr size_t kMinPanels = 4;
+	const size_t threads = num_threads();
+	const bool serial = threads == 1 || m * n * k < kParallelMin;
 
 	for (size_t jc = 0; jc < n; jc += kNC) {
 		size_t nc = std::min(kNC, n - jc);
@@ -303,16 +307,30 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 			size_t kc = std::min(kKC, k - pc);
 			Store mode = pc > 0 ? Store::kContinue : accumulate ? Store::kAdd : Store::kOverwrite;
 			pack_b(trans_b, b, ldb, pc, jc, kc, nc, b_pack);
-			// Each chunk owns the C rows of one kMC block and packs its own A
-			// block, so there is no cross-thread accumulation and the result does
-			// not depend on the thread count.
-			auto block = [&](size_t blk) {
+			// With few row blocks (small m) also split the columns so there are
+			// about kChunksPerThread chunks per thread to balance dynamically.
+			const size_t panels = (nc + kNR - 1) / kNR;
+			size_t col_chunks = 1;
+			if (!serial && blocks < kChunksPerThread * threads)
+				col_chunks = std::max<size_t>(1, std::min((kChunksPerThread * threads + blocks - 1) / blocks,
+					panels / kMinPanels));
+			const size_t panels_per_chunk = (panels + col_chunks - 1) / col_chunks;
+			col_chunks = (panels + panels_per_chunk - 1) / panels_per_chunk;
+			// Each chunk owns one kMC row block and a run of whole kNR column
+			// panels of C, and packs its own A block, so there is no
+			// cross-thread accumulation and every C element sees the same tile
+			// sequence whatever the thread count.
+			auto chunk = [&](size_t idx) {
 				thread_local AlignedBuffer a_buf;
 				float* a_pack = a_buf.get(kMC * kKC);
+				size_t blk = idx / col_chunks;
+				size_t j0 = (idx % col_chunks) * panels_per_chunk * kNR;
+				size_t j1 = std::min(nc, j0 + panels_per_chunk * kNR);
+				if (j0 >= j1) return;
 				size_t ic = blk * kMC;
 				size_t mc = std::min(kMC, m - ic);
 				pack_a(trans_a, a, lda, ic, pc, mc, kc, a_pack);
-				for (size_t jr = 0; jr < nc; jr += kNR) {
+				for (size_t jr = j0; jr < j1; jr += kNR) {
 					size_t nr = std::min(kNR, nc - jr);
 					for (size_t ir = 0; ir < mc; ir += kMR) {
 						size_t mr = std::min(kMR, mc - ir);
@@ -321,10 +339,10 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 					}
 				}
 			};
-			if (serial || blocks == 1) {
-				for (size_t blk = 0; blk < blocks; ++blk) block(blk);
+			if (serial) {
+				for (size_t idx = 0; idx < blocks * col_chunks; ++idx) chunk(idx);
 			} else {
-				parallel_for(blocks, block);
+				parallel_for(blocks * col_chunks, chunk);
 			}
 		}
 	}
