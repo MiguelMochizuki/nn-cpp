@@ -8,6 +8,7 @@
 
 #include "stats.hpp"
 #include "nn/autograd/ops.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <chrono>
 #include <random>
@@ -92,6 +93,10 @@ MatmulResult run_matmul(size_t n, unsigned seed, int warmup, int runs) {
 	double m = median(t);
 	double flops = 2.0 * n * n * n;
 	return {n, m, flops / (m * 1e6), spread(t), runs};
+}
+
+void apply_threads(size_t threads) {
+	kernels::set_num_threads(threads);
 }
 
 }  // namespace bench

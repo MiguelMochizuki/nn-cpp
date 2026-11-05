@@ -104,6 +104,8 @@ int main(int argc, char** argv) {
 			return fail(std::string("invalid NN_NUM_THREADS: '") + env + "' (expected a positive integer)");
 	}
 
+	bench::apply_threads(threads);
+
 	try {
 		// Open the output before any timing so an unwritable path fails fast.
 		bench::CsvWriter csv(out);

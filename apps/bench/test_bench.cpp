@@ -11,6 +11,7 @@
 #include "stats.hpp"
 #include "workloads.hpp"
 #include "nn/autograd/ops.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -136,4 +137,13 @@ TEST_CASE("run_inference and run_matmul") {
 	MatmulResult m = run_matmul(8, 1, 1, 3);
 	CHECK(m.gflops > 0);
 	CHECK(m.n == 8);
+}
+
+TEST_CASE("apply_threads sets the library thread count") {
+	const size_t before = nn::kernels::num_threads();
+	apply_threads(3);
+	CHECK(nn::kernels::num_threads() == 3);
+	apply_threads(1);
+	CHECK(nn::kernels::num_threads() == 1);
+	nn::kernels::set_num_threads(before);
 }
