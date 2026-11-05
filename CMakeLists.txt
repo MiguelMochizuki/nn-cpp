@@ -26,6 +26,7 @@ add_library(nn_core STATIC
 	src/nn/conv2d.cpp
 	src/nn/pool2d.cpp
 	src/nn/dropout.cpp
+	src/nn/batchnorm.cpp
 	src/nn/activation.cpp
 	src/nn/sequential.cpp
 	src/checkpoint.cpp

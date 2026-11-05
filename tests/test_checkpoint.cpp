@@ -7,6 +7,7 @@
 #include "doctest/doctest.h"
 #include "nn/checkpoint.hpp"
 #include "nn/nn/activation.hpp"
+#include "nn/nn/batchnorm.hpp"
 #include "nn/nn/linear.hpp"
 #include "nn/nn/loss.hpp"
 #include "nn/nn/sequential.hpp"
@@ -433,5 +434,29 @@ TEST_CASE("a v1.0.0 checkpoint loads and a parameter-only save is byte-identical
 	CHECK(p[1].second.data().data() == std::vector<float>{0.125f, -2.0f});
 	save_checkpoint(PATH, m, nullptr, 7);
 	CHECK(read_bytes(PATH) == read_bytes(golden));
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("BatchNorm2d running statistics survive a checkpoint round trip inside Sequential") {
+	auto make = [] {
+		Sequential m;
+		m.add(std::make_unique<BatchNorm2d>(3));
+		return m;
+	};
+	Sequential a = make(), b = make();
+	for (int step = 0; step < 3; step++) {
+		Tensor x = Tensor::random({4, 3, 2, 2}, -1.0f + static_cast<float>(step), 2.0f);
+		a.forward(Value::leaf(x));
+	}
+	auto bufs = a.named_buffers();
+	CHECK(bufs[0].second->data() != std::vector<float>(3, 0.0f));
+	save_checkpoint(PATH, a);
+	load_checkpoint(PATH, b);
+	a.eval();
+	b.eval();
+	Tensor probe = Tensor::random({2, 3, 2, 2}, -1.0f, 1.0f);
+	CHECK(a.forward(Value::leaf(probe)).data().data() == b.forward(Value::leaf(probe)).data().data());
+	CHECK(b.named_buffers()[1].first == "0.running_var");
+	CHECK(b.named_buffers()[1].second->data() == a.named_buffers()[1].second->data());
 	std::remove(PATH.c_str());
 }

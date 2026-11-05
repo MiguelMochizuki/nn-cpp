@@ -11,6 +11,7 @@
 #include "nn/nn/pool2d.hpp"
 #include "nn/nn/flatten.hpp"
 #include "nn/nn/dropout.hpp"
+#include "nn/nn/batchnorm.hpp"
 #include "nn/random.hpp"
 #include "nn/nn/activation.hpp"
 #include "nn/nn/sequential.hpp"
@@ -312,4 +313,123 @@ TEST_CASE("Dropout gradcheck with a fixed seed") {
 		return sum(mul(d.forward(a), Value::leaf(Tensor({7, 3}, w))));
 	};
 	CHECK(gradcheck(f, x));
+}
+
+namespace {
+// Per-channel mean and biased variance of y, channel axis 1
+std::pair<std::vector<float>, std::vector<float>> channel_stats(const Tensor& y) {
+	size_t N = y.shape()[0], C = y.shape()[1], inner = y.size() / (N * C);
+	std::vector<float> m(C, 0.0f), v(C, 0.0f);
+	for (size_t c = 0; c < C; c++) {
+		for (size_t n = 0; n < N; n++)
+			for (size_t i = 0; i < inner; i++) m[c] += y.data()[(n * C + c) * inner + i];
+		m[c] /= static_cast<float>(N * inner);
+		for (size_t n = 0; n < N; n++)
+			for (size_t i = 0; i < inner; i++) {
+				float d = y.data()[(n * C + c) * inner + i] - m[c];
+				v[c] += d * d;
+			}
+		v[c] /= static_cast<float>(N * inner);
+	}
+	return {m, v};
+}
+}  // namespace
+
+TEST_CASE("BatchNorm train output is normalised per channel") {
+	BatchNorm1d b1(4);
+	auto s1 = channel_stats(b1.forward(Value::leaf(Tensor::random({16, 4}, -3.0f, 5.0f))).data());
+	BatchNorm2d b2(3);
+	auto s2 = channel_stats(b2.forward(Value::leaf(Tensor::random({8, 3, 5, 5}, -3.0f, 5.0f))).data());
+	for (size_t c = 0; c < 4; c++) {
+		CHECK(s1.first[c] == doctest::Approx(0.0f).epsilon(1e-3).scale(1.0));
+		CHECK(s1.second[c] == doctest::Approx(1.0f).epsilon(1e-3));
+	}
+	for (size_t c = 0; c < 3; c++) {
+		CHECK(s2.first[c] == doctest::Approx(0.0f).epsilon(1e-3).scale(1.0));
+		CHECK(s2.second[c] == doctest::Approx(1.0f).epsilon(1e-3));
+	}
+}
+
+TEST_CASE("BatchNorm running statistics follow the unbiased formula and eval uses them") {
+	BatchNorm1d bn(2, 1e-5f, 0.25f);
+	// channel 0: 1,2,3,6 -> mean 3, biased var 3.5, unbiased 14/3; channel 1: constant 5
+	Tensor x({4, 2}, std::vector<float>{1, 5, 2, 5, 3, 5, 6, 5});
+	bn.forward(Value::leaf(x));
+	auto bufs = bn.named_buffers();
+	CHECK(bufs[0].first == "running_mean");
+	CHECK(bufs[1].first == "running_var");
+	CHECK(bufs[0].second->data()[0] == doctest::Approx(0.75f * 0.0f + 0.25f * 3.0f));
+	CHECK(bufs[0].second->data()[1] == doctest::Approx(0.25f * 5.0f));
+	CHECK(bufs[1].second->data()[0] == doctest::Approx(0.75f + 0.25f * 14.0f / 3.0f));
+	CHECK(bufs[1].second->data()[1] == doctest::Approx(0.75f));
+	bn.eval();
+	Value y = bn.forward(Value::leaf(Tensor({1, 2}, std::vector<float>{1.0f, 2.0f})));
+	float rm0 = 0.75f, rv0 = 0.75f + 0.25f * 14.0f / 3.0f, rm1 = 1.25f, rv1 = 0.75f;
+	CHECK(y.data().data()[0] == doctest::Approx((1.0f - rm0) / std::sqrt(rv0 + 1e-5f)));
+	CHECK(y.data().data()[1] == doctest::Approx((2.0f - rm1) / std::sqrt(rv1 + 1e-5f)));
+	// eval does not touch the statistics
+	CHECK(bufs[0].second->data()[0] == doctest::Approx(0.75f));
+}
+
+TEST_CASE("BatchNorm eval before any step is the identity up to eps") {
+	BatchNorm2d bn(2);
+	bn.eval();
+	Tensor x = Tensor::random({2, 2, 3, 3}, -2.0f, 2.0f);
+	Value y = bn.forward(Value::leaf(x));
+	for (size_t i = 0; i < x.size(); i++) CHECK(y.data().data()[i] == doctest::Approx(x.data()[i]).epsilon(1e-4));
+}
+
+TEST_CASE("BatchNorm with one element per channel stays finite and keeps running_var") {
+	BatchNorm2d bn(3);
+	Value y = bn.forward(Value::leaf(Tensor({1, 3, 1, 1}, std::vector<float>{1.0f, -2.0f, 4.0f})));
+	for (float v : y.data().data()) {
+		CHECK(std::isfinite(v));
+		CHECK(v == 0.0f);
+	}
+	CHECK(bn.named_buffers()[1].second->data() == std::vector<float>(3, 1.0f));
+	CHECK(bn.named_buffers()[0].second->data()[0] == doctest::Approx(0.1f));
+}
+
+TEST_CASE("BatchNorm rejects wrong rank and channel count") {
+	BatchNorm1d b1(3);
+	BatchNorm2d b2(3);
+	CHECK_THROWS_AS(b1.forward(Value::leaf(Tensor({2, 4}, 1.0f))), TensorShapeError);
+	CHECK_THROWS_AS(b1.forward(Value::leaf(Tensor({2, 3, 1, 1}, 1.0f))), TensorShapeError);
+	CHECK_THROWS_AS(b2.forward(Value::leaf(Tensor({2, 3}, 1.0f))), TensorShapeError);
+	CHECK_THROWS_AS(b2.forward(Value::leaf(Tensor({2, 4, 2, 2}, 1.0f))), TensorShapeError);
+}
+
+TEST_CASE("BatchNorm gradchecks input, weight and bias in train mode") {
+	for (bool two_d : {false, true}) {
+		std::vector<size_t> shape = two_d ? std::vector<size_t>{4, 2, 3, 3} : std::vector<size_t>{7, 3};
+		size_t C = shape[1];
+		Tensor xt = Tensor::random(shape, -1.0f, 1.0f);
+		Tensor wt = Tensor::random(shape, 0.5f, 1.5f);  // fixed random weighting so the loss is not shift-invariant
+		std::unique_ptr<Module> bn;
+		if (two_d) bn = std::make_unique<BatchNorm2d>(C); else bn = std::make_unique<BatchNorm1d>(C);
+		auto params = bn->parameters();
+		params[0].data() = Tensor::random({C}, 0.5f, 1.5f);
+		params[1].data() = Tensor::random({C}, -0.5f, 0.5f);
+		auto f_x = [&](Value x) { return sum(mul(bn->forward(x), Value::leaf(wt))); };
+		CHECK(gradcheck(f_x, Value::leaf(xt, true)));
+		// weight and bias: perturb the layer's own leaves
+		Value x = Value::leaf(xt);
+		for (size_t pi = 0; pi < 2; pi++) {
+			auto f_p = [&](Value) { return sum(mul(bn->forward(x), Value::leaf(wt))); };
+			CHECK(gradcheck(f_p, params[pi]));
+		}
+	}
+}
+
+TEST_CASE("BatchNorm 3-step train then eval flow matches a hand-computed reference") {
+	BatchNorm1d bn(1, 0.0f, 0.5f);
+	// single channel; batches {0,2}, {4,4}, {1,3}: mean 1,4,2; unbiased var 2,0,2
+	float batches[3][2] = {{0, 2}, {4, 4}, {1, 3}};
+	for (auto& b : batches) bn.forward(Value::leaf(Tensor({2, 1}, std::vector<float>{b[0], b[1]})));
+	// running_mean: 0 -> .5 -> 2.25 -> 2.125; running_var: 1 -> 1.5 -> .75 -> 1.375
+	CHECK(bn.named_buffers()[0].second->data()[0] == doctest::Approx(2.125f));
+	CHECK(bn.named_buffers()[1].second->data()[0] == doctest::Approx(1.375f));
+	bn.eval();
+	Value y = bn.forward(Value::leaf(Tensor({1, 1}, 5.0f)));
+	CHECK(y.data().data()[0] == doctest::Approx((5.0f - 2.125f) / std::sqrt(1.375f)));
 }
