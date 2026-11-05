@@ -1095,6 +1095,9 @@ TEST_CASE("weighted cross_entropy_loss rejects bad input") {
 	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, w, 1.0f), std::invalid_argument);
 	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, w, -0.1f), std::invalid_argument);
 	CHECK_THROWS_AS(cross_entropy_loss(logits, Tensor({2}, std::vector<float>{0, 3}), w), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{1, -1, 1})), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{1, std::nanf(""), 1})), std::invalid_argument);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{1, INFINITY, 1})), std::invalid_argument);
 	// Both samples belong to zero-weight classes
 	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{0, 0, 1})), std::invalid_argument);
 }

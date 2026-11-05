@@ -841,6 +841,11 @@ Value cross_entropy_loss(const Value& logits, const Tensor& targets, const Tenso
 	if (!(label_smoothing >= 0.0f && label_smoothing < 1.0f)) {
 		throw std::invalid_argument("cross_entropy_loss: label_smoothing must be in [0, 1)");
 	}
+	for (float w : class_weights.data()) {
+		if (!(std::isfinite(w) && w >= 0.0f)) {
+			throw std::invalid_argument("cross_entropy_loss: class weights must be finite and >= 0");
+		}
+	}
 	std::vector<size_t> target_idx(N);
 	double total_weight = 0.0;
 	for (size_t n = 0; n < N; n++) {
