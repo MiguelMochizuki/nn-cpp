@@ -420,6 +420,9 @@ TEST_CASE("a file with buffers does not load into a buffer-less model") {
 TEST_CASE("a buffer name colliding with a parameter name throws") {
 	WithBuffer clash("w");
 	CHECK_THROWS_AS(save_checkpoint(PATH, clash), std::runtime_error);
+	// A real file, so the load reaches the collision check instead of failing on a missing file
+	WithBuffer fine;
+	save_checkpoint(PATH, fine);
 	CHECK_THROWS_AS(load_checkpoint(PATH, clash), std::runtime_error);
 	std::remove(PATH.c_str());
 }

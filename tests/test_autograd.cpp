@@ -1090,3 +1090,9 @@ TEST_CASE("weighted cross_entropy_loss rejects bad input") {
 	// Both samples belong to zero-weight classes
 	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{0, 0, 1})), std::invalid_argument);
 }
+
+TEST_CASE("axis reductions over a zero-length axis throw") {
+	Value x = Value::leaf(Tensor({0, 3}, 0.0f), false);
+	CHECK_THROWS_AS(mean(x, 0), TensorShapeError);
+	CHECK_THROWS_AS(sum(x, 0), TensorShapeError);
+}

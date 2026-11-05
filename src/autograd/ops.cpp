@@ -234,6 +234,7 @@ Value reduce_axis(const Value& x, int axis, bool keepdim, bool average) {
 	if (axis < -nd || axis >= nd) throw TensorIndexError();
 	size_t ax = static_cast<size_t>(axis < 0 ? axis + nd : axis);
 	size_t n = shape[ax], outer = 1, inner = 1;
+	if (n == 0) throw TensorShapeError();  // would divide by zero in mean and has no defined max
 	for (size_t i = 0; i < ax; i++) outer *= shape[i];
 	for (size_t i = ax + 1; i < shape.size(); i++) inner *= shape[i];
 	std::vector<size_t> out_shape;

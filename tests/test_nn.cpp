@@ -474,3 +474,9 @@ TEST_CASE("Conv2d with rectangular kernel, dilation and groups") {
 	CHECK_THROWS_AS(Conv2d(4, 4, std::make_pair<size_t, size_t>(3, 3), 1, 0, 0, 1), std::invalid_argument);
 	CHECK_THROWS_AS(Conv2d(4, 4, std::make_pair<size_t, size_t>(3, 3), 1, 0, 1, 0), std::invalid_argument);
 }
+
+TEST_CASE("Dropout mask for a fixed seed is pinned") {
+	manual_seed(123);
+	Dropout d(0.5f);
+	CHECK(dropout_mask(d, 12) == std::vector<float>{2, 0, 2, 2, 2, 2, 0, 0, 2, 2, 0, 2});
+}

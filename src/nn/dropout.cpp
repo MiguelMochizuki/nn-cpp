@@ -20,7 +20,9 @@ Dropout::Dropout(float p) : p_(p), gen_(derive_generator("dropout")) {
 Value Dropout::forward(const Value& input) {
 	if (!training_ || p_ == 0.0f) return input;
 	Tensor mask(input.data().shape());
-	float keep_scale = p_ == 1.0f ? 0.0f : 1.0f / (1.0f - p_);
+	// p == 1 drops everything, so no random numbers are drawn (mask stays zero-initialised)
+	if (p_ == 1.0f) return mul(input, Value::leaf(std::move(mask)));
+	float keep_scale = 1.0f / (1.0f - p_);
 	for (float& m : mask.data()) {
 		// 24 high bits give a uniform in [0, 1) that is identical on every standard library
 		float u = static_cast<float>(gen_() >> 8) * (1.0f / 16777216.0f);
