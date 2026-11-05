@@ -6,6 +6,7 @@
 
 #include "nn/data/dataloader.hpp"
 #include "nn/random.hpp"
+#include "shuffle.hpp"
 
 #include <algorithm>
 #include <numeric>
@@ -31,7 +32,7 @@ size_t DataLoader::num_batches() const {
 
 void DataLoader::reset_epoch() {
 	if (shuffle_) {
-		std::shuffle(indices_.begin(), indices_.end(), rng_);
+		portable_shuffle(indices_, rng_);
 	}
 }
 

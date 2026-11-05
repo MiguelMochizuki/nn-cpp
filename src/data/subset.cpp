@@ -5,6 +5,7 @@
  */
 
 #include "nn/data/subset.hpp"
+#include "shuffle.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -68,8 +69,8 @@ std::vector<Subset> random_split(const Dataset& dataset, const std::vector<doubl
 
 	std::vector<size_t> order(n);
 	std::iota(order.begin(), order.end(), 0);
-	std::mt19937 rng(static_cast<std::mt19937::result_type>(seed));
-	std::shuffle(order.begin(), order.end(), rng);
+	std::mt19937 rng(static_cast<std::mt19937::result_type>((seed & 0xFFFFFFFFu) ^ (seed >> 32)));
+	portable_shuffle(order, rng);
 
 	std::vector<Subset> out;
 	size_t pos = 0;

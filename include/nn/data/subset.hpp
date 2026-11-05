@@ -54,7 +54,8 @@ private:
  * Parameters:
  * const Dataset& dataset: dataset to split; must outlive the subsets
  * const std::vector<double>& fractions: positive fractions summing to 1 within 1e-9
- * std::uint64_t seed: seeds the std::mt19937 that shuffles the indices
+ * std::uint64_t seed: seeds the std::mt19937 that shuffles the indices; the 64 bits are folded to
+ * the engine's 32-bit seed as (low ^ high), so seeds differing only above bit 31 still differ
  *
  * Returns vector<Subset>: one subset per fraction, sizes floor(fraction * N) with the remainder
  * added to the last non-empty split; throws std::invalid_argument on bad fractions or an empty split

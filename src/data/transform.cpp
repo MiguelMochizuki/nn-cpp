@@ -20,7 +20,13 @@ float unit(std::mt19937& rng) { return static_cast<float>(rng() >> 8) / 16777216
 
 }  // namespace
 
-Compose::Compose(std::vector<std::unique_ptr<Transform>> steps) : steps_(std::move(steps)) {}
+Compose::Compose(std::vector<std::unique_ptr<Transform>> steps) : steps_(std::move(steps)) {
+	for (const auto& step : steps_) {
+		if (!step) {
+			throw std::invalid_argument("Compose: step is null");
+		}
+	}
+}
 
 Tensor Compose::operator()(const Tensor& sample) {
 	Tensor out = sample;
@@ -54,7 +60,7 @@ Tensor RandomHorizontalFlip::operator()(const Tensor& sample) {
 	// always draw so the stream advances once per sample regardless of p
 	bool flip = unit(rng_) < p_;
 	Tensor out = sample;
-	if (!flip || sample.shape().empty()) {
+	if (!flip || sample.shape().empty() || sample.shape().back() == 0) {
 		return out;
 	}
 	size_t width = sample.shape().back();

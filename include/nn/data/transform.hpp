@@ -48,7 +48,7 @@ public:
 	 * Parameters:
 	 * vector<unique_ptr<Transform>> steps: transforms to apply in order
 	 *
-	 * Returns Compose: none (constructor)
+	 * Returns Compose: none (constructor); throws std::invalid_argument if any step is null
 	 */
 	explicit Compose(std::vector<std::unique_ptr<Transform>> steps);
 
@@ -84,7 +84,8 @@ private:
 };
 
 /*
- * Mirrors the last axis with probability p. Owns derive_generator("transform.hflip").
+ * Mirrors the last axis with probability p; a sample with a zero-length last axis is returned
+ * unchanged. Owns derive_generator("transform.hflip").
  *
  * Attributes:
  * float p_: flip probability

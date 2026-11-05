@@ -136,6 +136,46 @@ TEST_CASE("random_split is reproducible, disjoint and covering") {
 	CHECK(r[2].size() == 4);
 }
 
+TEST_CASE("random_split permutation is pinned for a fixed seed and covers every index once") {
+	IndexEncodingDataset base(10);
+	auto parts = random_split(base, {0.5, 0.5}, 42);
+	std::vector<int> order;
+	for (auto& s : parts) for (size_t i = 0; i < s.size(); i++) order.push_back(static_cast<int>(s.get(i).first.data()[0]));
+	CHECK(order == std::vector<int>{1, 3, 9, 7, 6, 0, 8, 4, 5, 2});
+	std::vector<int> sorted = order;
+	std::sort(sorted.begin(), sorted.end());
+	for (int i = 0; i < 10; i++) CHECK(sorted[i] == i);
+}
+
+TEST_CASE("random_split folds the high seed bits into the engine seed") {
+	IndexEncodingDataset base(10);
+	auto first = [&](uint64_t seed) {
+		std::vector<float> v;
+		auto parts = random_split(base, {0.5, 0.5}, seed);
+		for (size_t i = 0; i < parts[0].size(); i++) v.push_back(parts[0].get(i).first.data()[0]);
+		return v;
+	};
+	CHECK(first(5) != first(5 + (uint64_t{1} << 32)));
+	// high and low halves cancel: 5 ^ 0 == 0 ^ 5, so these seeds fold to the same engine seed
+	CHECK(first(5) == first(uint64_t{5} << 32));
+}
+
+TEST_CASE("a seeded DataLoader epoch has a pinned order and visits every index once") {
+	IndexEncodingDataset base(10);
+	manual_seed(42);
+	DataLoader loader(base, 10, true);
+	auto order = [&]() {
+		Value x = loader.get_batch(0).first;
+		std::vector<int> v;
+		for (size_t i = 0; i < 10; i++) v.push_back(static_cast<int>(x.data().get({i, 0})));
+		return v;
+	};
+	CHECK(order() == std::vector<int>{1, 2, 3, 7, 6, 8, 0, 5, 9, 4});
+	std::vector<int> sorted = order();
+	std::sort(sorted.begin(), sorted.end());
+	for (int i = 0; i < 10; i++) CHECK(sorted[i] == i);
+}
+
 TEST_CASE("random_split rejects bad fractions and empty splits") {
 	IndexEncodingDataset base(10);
 	CHECK_THROWS_AS(random_split(base, {0.5, 0.3}, 0), std::invalid_argument);
@@ -190,6 +230,20 @@ TEST_CASE("RandomHorizontalFlip mirrors columns at p=1, is identity at p=0 and r
 	CHECK(std::count(d.begin(), d.end(), true) > 0);
 	CHECK(std::count(d.begin(), d.end(), false) > 0);
 	CHECK_THROWS_AS(RandomHorizontalFlip(1.5f), std::invalid_argument);
+}
+
+TEST_CASE("RandomHorizontalFlip returns a zero-width sample unchanged") {
+	Tensor empty({2, 0});
+	Tensor out = RandomHorizontalFlip(1.0f)(empty);
+	CHECK(out.shape() == empty.shape());
+	CHECK(out.size() == 0);
+}
+
+TEST_CASE("Compose rejects a null step") {
+	std::vector<std::unique_ptr<Transform>> steps;
+	steps.push_back(std::make_unique<Normalize>(0.0f, 1.0f));
+	steps.push_back(nullptr);
+	CHECK_THROWS_AS(Compose(std::move(steps)), std::invalid_argument);
 }
 
 TEST_CASE("RandomShift translates with zero fill and keeps the shape") {
