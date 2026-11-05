@@ -7,11 +7,14 @@
 #include "doctest/doctest.h"
 #include "nn/data/dataloader.hpp"
 #include "nn/data/subset.hpp"
+#include "nn/data/fer2013.hpp"
 #include "nn/data/tensor_dataset.hpp"
 #include "nn/data/transform.hpp"
 #include "nn/random.hpp"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <set>
 #include <stdexcept>
 
@@ -266,4 +269,93 @@ TEST_CASE("a transform's stream is unaffected by creating another transform") {
 		return d;
 	};
 	CHECK(run(false) == run(true));
+}
+
+namespace {
+
+// Writes text to a fresh file in the system temp directory and removes it on destruction
+struct TempFile {
+	std::filesystem::path path;
+	explicit TempFile(const std::string& name, const std::string& text) {
+		path = std::filesystem::temp_directory_path() / ("nn_cpp_test_" + name);
+		std::ofstream(path, std::ios::binary) << text;
+	}
+	~TempFile() { std::error_code ec; std::filesystem::remove(path, ec); }
+};
+
+// size x size image whose pixels all equal v
+std::string pixels_of(int v, int size = 2) {
+	std::string s;
+	for (int i = 0; i < size * size; i++) s += (i ? " " : "") + std::to_string(v);
+	return s;
+}
+
+std::string fer_text(const std::string& eol, bool quote_pixels) {
+	auto q = [&](const std::string& p) { return quote_pixels ? "\"" + p + "\"" : p; };
+	return "emotion,pixels,Usage" + eol +
+		   "0," + q(pixels_of(0)) + ",Training" + eol +
+		   "3," + q(pixels_of(255)) + ",PublicTest" + eol +
+		   "3," + q(pixels_of(51)) + ",Training" + eol +
+		   "6," + q(pixels_of(255)) + ",PrivateTest" + eol +
+		   "1," + q(pixels_of(102)) + ",Other" + eol + eol;
+}
+
+}  // namespace
+
+TEST_CASE("Fer2013Dataset parses LF, CRLF and quoted variants with a trailing blank line") {
+	for (auto [eol, quoted] : {std::pair<std::string, bool>{"\n", false}, {"\r\n", false}, {"\n", true}, {"\r\n", true}}) {
+		TempFile f("fer_ok.csv", fer_text(eol, quoted));
+		Fer2013Dataset all(f.path.string(), "", 2);
+		CHECK(all.size() == 5);
+		auto [x, y] = all.get(2);
+		CHECK(x.shape() == std::vector<size_t>{1, 2, 2});
+		CHECK(x.data()[0] == doctest::Approx(51.0f / 255.0f));
+		CHECK(y.shape().empty());
+		CHECK(y.data()[0] == 3.0f);
+		CHECK(all.get(1).first.data()[3] == doctest::Approx(1.0f));
+		CHECK(all.class_counts() == std::vector<size_t>{1, 1, 0, 2, 0, 0, 1});
+
+		Fer2013Dataset train(f.path.string(), "Training", 2);
+		CHECK(train.size() == 2);
+		CHECK(train.class_counts() == std::vector<size_t>{1, 0, 0, 1, 0, 0, 0});
+		CHECK(Fer2013Dataset(f.path.string(), "PublicTest", 2).size() == 1);
+		CHECK(Fer2013Dataset(f.path.string(), "Nothing", 2).size() == 0);
+		CHECK_THROWS_AS(all.get(5), TensorIndexError);
+	}
+}
+
+TEST_CASE("Fer2013Dataset locates columns by header name") {
+	TempFile f("fer_cols.csv", "Usage,pixels,emotion\nTraining,1 2 3 4,5\n");
+	Fer2013Dataset ds(f.path.string(), "Training", 2);
+	CHECK(ds.get(0).second.data()[0] == 5.0f);
+}
+
+TEST_CASE("Fer2013Dataset errors carry the line number and reason") {
+	auto message = [](const std::string& body) {
+		TempFile f("fer_bad.csv", "emotion,pixels,Usage\n" + body);
+		try {
+			Fer2013Dataset(f.path.string(), "", 2);
+		} catch (const std::runtime_error& e) {
+			return std::string(e.what());
+		}
+		return std::string("no error");
+	};
+	auto has = [](const std::string& m, const std::string& part) { return m.find(part) != std::string::npos; };
+	std::string ok = "0," + pixels_of(1) + ",Training\n";
+	std::string m = message(ok + ok + "0,1 2 3,Training\n");
+	CHECK(has(m, "line 4"));
+	CHECK(has(m, "expected 4 pixels, found 3"));
+	m = message(ok + "0,1 2 3 256,Training\n");
+	CHECK(has(m, "line 3"));
+	CHECK(has(m, "[0, 255]"));
+	CHECK(has(message("7," + pixels_of(1) + ",Training\n"), "emotion"));
+	CHECK(has(message("x," + pixels_of(1) + ",Training\n"), "line 2"));
+	CHECK(has(message("0\n"), "fields"));
+	CHECK(has(message("0,\"1 2 3 4,Training\n"), "unterminated"));
+
+	CHECK_THROWS_AS(Fer2013Dataset((std::filesystem::temp_directory_path() / "nn_cpp_no_such.csv").string()), std::runtime_error);
+	TempFile no_cols("fer_nocols.csv", "a,b\n1,2\n");
+	CHECK_THROWS_AS(Fer2013Dataset(no_cols.path.string()), std::runtime_error);
+	TempFile empty("fer_empty.csv", "");
+	CHECK_THROWS_AS(Fer2013Dataset(empty.path.string()), std::runtime_error);
 }
