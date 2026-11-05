@@ -41,7 +41,7 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
-This builds the `nn_core` static library, the example apps, and the test suite (`ctest`/[doctest](https://github.com/doctest/doctest), fetched automatically). Tests can be skipped with `-DNN_BUILD_TESTS=OFF`; examples with `-DNN_BUILD_APPS=OFF`. `-DNN_NATIVE=ON` builds for the host CPU, which on a CPU with AVX2 and FMA enables the AVX2/FMA GEMM microkernel. On x86-64, matrix products use a thread pool; the thread count defaults to `std::thread::hardware_concurrency()` and can be set with the `NN_NUM_THREADS` environment variable or `nn::kernels::set_num_threads(n)`. Results do not depend on the thread count.
+This builds the `nn_core` static library, the example apps, and the test suite (`ctest`/[doctest](https://github.com/doctest/doctest), fetched automatically). Tests can be skipped with `-DNN_BUILD_TESTS=OFF`; examples with `-DNN_BUILD_APPS=OFF`. `-DNN_NATIVE=ON` builds for the host CPU, which on a CPU with AVX2 and FMA enables the AVX2/FMA GEMM microkernel. The elementwise ops, ReLU, im2col, col2im and max-pooling run on a thread pool on every target, and on x86-64 matrix products do too; the thread count defaults to `std::thread::hardware_concurrency()` and can be set with the `NN_NUM_THREADS` environment variable or `nn::kernels::set_num_threads(n)`. Results do not depend on the thread count.
 
 Run the tests:
 
@@ -190,12 +190,12 @@ Because every layer's `forward()` is expressed purely in terms of these differen
 | `nn/optim/sgd.hpp` | `SGD(params, lr, momentum=0)` |
 | `nn/optim/adam.hpp` | `Adam(params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8)` |
 | `nn/data/dataset.hpp` | `Dataset` — interface (`size()`, `get(index)`) |
-| `nn/kernels/parallel.hpp` | `num_threads()`, `set_num_threads(n)`, `parallel_for(n_chunks, fn)` — fork/join thread pool used by `sgemm` |
+| `nn/kernels/parallel.hpp` | `num_threads()`, `set_num_threads(n)`, `parallel_for(n_chunks, fn)`, `parallel_range(n, min_per_chunk, fn)` — fork/join thread pool used by `sgemm` (x86-64), the elementwise ops, ReLU, im2col/col2im and max-pooling |
 | `nn/data/dataloader.hpp` | `DataLoader(dataset, batch_size, shuffle)` — `num_batches()`, `reset_epoch()`, `get_batch(i)` |
 
 ## Scope
 
-This project targets clarity and correctness over raw throughput: matrix products go through a cache-blocked, multithreaded GEMM kernel (`nn/kernels/gemm.hpp`) with an AVX2/FMA microkernel (when compiled for AVX2 and FMA, for example `-DNN_NATIVE=ON` on such a CPU), an SSE2 microkernel on other x86-64 builds and an unpacked transpose-aware loop on other targets; on x86-64 the GEMM is the only threaded code (a fork/join pool in `nn/kernels/parallel.hpp`, bitwise identical results for any thread count). The tensor's dtype is fixed to `float`; a runtime-selectable dtype is a natural future extension but is not implemented here.
+This project targets clarity and correctness over raw throughput: matrix products go through a cache-blocked, multithreaded GEMM kernel (`nn/kernels/gemm.hpp`) with an AVX2/FMA microkernel (when compiled for AVX2 and FMA, for example `-DNN_NATIVE=ON` on such a CPU), an SSE2 microkernel on other x86-64 builds and an unpacked transpose-aware loop on other targets; the GEMM is threaded on x86-64 only, while the elementwise ops, ReLU, im2col, col2im and max-pooling are threaded on all targets (a fork/join pool in `nn/kernels/parallel.hpp`; GEMM results are bitwise identical for any thread count); op results are moved into the autograd graph rather than copied. The tensor's dtype is fixed to `float`; a runtime-selectable dtype is a natural future extension but is not implemented here.
 
 ## Documentation Conventions
 
