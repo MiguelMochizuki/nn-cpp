@@ -1,0 +1,2 @@
+config,label,threads,benchmark,size,forward_ms,backward_ms,optim_ms,total_ms,gflops,spread,runs
+native,pinned,8,cnn_mnist,,2.45852,2.84909,0.064202,5.35381,,0.0867901,15

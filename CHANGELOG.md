@@ -22,6 +22,7 @@ Adds what is needed to train a small CNN with regularisation on real image data 
 
 - The `DataLoader` shuffle order differs from 1.0.0. The shuffle is now a portable Fisher-Yates, so the same seed gives the same order on every platform.
 - Checkpoints may now contain module buffers after the parameters, and always store the optimizer's learning rate as `optim.lr`. Files written by 1.0.0 still load; a file without buffers cannot be loaded into a model that has buffers (`std::runtime_error`).
+- Elementwise ops with broadcasting (add, sub, mul, div) are faster and run in parallel; results are unchanged.
 - A non-leaf `Value::grad()` is an empty placeholder until `backward()` reaches it (already the case since 1.0.0); use `has_grad()` to test.
 
 ### Fixed

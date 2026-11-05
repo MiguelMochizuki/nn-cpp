@@ -124,53 +124,13 @@ size_t broadcast_offset(const std::vector<size_t>& out_idx, const std::vector<si
 }
 
 /**
- * Applies a binary operation when the smaller operand repeats over the larger one in a simple
- * pattern: a scalar, a trailing block (row broadcast) or one value per last-axis row (column
- * broadcast). Skips the general per-element index arithmetic.
+ * Applies a binary operation elementwise, broadcasting when the shapes differ.
  *
- * Parameters:
- * const Tensor& big: Operand whose shape is the result shape
- * const Tensor& small: Operand that is broadcast over big
- * Op op: Callable taking (big element, small element) and returning a float
- * Tensor& out: Receives the result when the pattern applies
- *
- * Returns bool: true if the pattern applied and out was filled, false to use the general path
- */
-template <typename Op>
-bool broadcast_small(const Tensor& big, const Tensor& small, Op op, Tensor& out) {
-	size_t n = big.size(), ns = small.size();
-	if (n == 0 || ns == 0 || small.ndim() > big.ndim()) return false;
-	const std::vector<size_t>& bs = big.shape();
-	const std::vector<size_t>& ss = small.shape();
-	size_t lead = 0;
-	while (lead < ss.size() && ss[lead] == 1) lead++;
-	size_t eff = ss.size() - lead;
-	const float* b_data = big.data().data();
-	const float* s_data = small.data().data();
-
-	if (std::equal(ss.begin() + lead, ss.end(), bs.end() - eff)) {
-		out = Tensor(bs);
-		float* o = out.data().data();
-		for (size_t base = 0; base < n; base += ns) {
-			for (size_t j = 0; j < ns; j++) o[base + j] = op(b_data[base + j], s_data[j]);
-		}
-		return true;
-	}
-	if (ss.size() == bs.size() && ss.back() == 1 && std::equal(ss.begin(), ss.end() - 1, bs.begin())) {
-		out = Tensor(bs);
-		float* o = out.data().data();
-		size_t cols = bs.back();
-		for (size_t r = 0; r < ns; r++) {
-			float v = s_data[r];
-			for (size_t j = 0; j < cols; j++) o[r * cols + j] = op(b_data[r * cols + j], v);
-		}
-		return true;
-	}
-	return false;
-}
-
-/**
- * Applies a binary operation elementwise, broadcasting when the shapes differ
+ * The result shape and a stride per operand (0 on broadcast or missing axes) are computed once,
+ * adjacent axes that both operands walk contiguously are merged, and the innermost merged axis
+ * runs as a tight loop. The output is split into disjoint flat ranges over the thread pool, so
+ * the result does not depend on the thread count; each element is computed as op(a, b) exactly
+ * as in a per-element index loop.
  *
  * Parameters:
  * const Tensor& a: Left operand
@@ -181,34 +141,76 @@ bool broadcast_small(const Tensor& big, const Tensor& small, Op op, Tensor& out)
  */
 template <typename Op>
 Tensor elementwise(const Tensor& a, const Tensor& b, Op op) {
-	if (a.shape() == b.shape()) {
-		Tensor out(a.shape());
-		const float* a_data = a.data().data();
-		const float* b_data = b.data().data();
-		float* out_data = out.data().data();
-		size_t n = a.size();
-		for (size_t i = 0; i < n; i++) {
-			out_data[i] = op(a_data[i], b_data[i]);
-		}
-		return out;
-	}
-
-	std::vector<size_t> out_shape = broadcast_shape(a.shape(), b.shape());
-	{
-		Tensor fast({0});
-		if (a.ndim() >= b.ndim() && a.shape() == out_shape && broadcast_small(a, b, op, fast)) return fast;
-		auto swapped = [&op](float x, float y) { return op(y, x); };
-		if (b.ndim() >= a.ndim() && b.shape() == out_shape && broadcast_small(b, a, swapped, fast)) return fast;
-	}
+	std::vector<size_t> out_shape = a.shape() == b.shape() ? a.shape() : broadcast_shape(a.shape(), b.shape());
 	Tensor out(out_shape);
-	std::vector<size_t> out_strides = compute_strides(out_shape);
+	const size_t n = out.size();
+	if (n == 0) return out;
 
-	for (size_t flat = 0; flat < out.size(); flat++) {
-		std::vector<size_t> out_idx = unravel_index(flat, out_strides, out_shape);
-		size_t a_off = broadcast_offset(out_idx, a.shape(), a.strides());
-		size_t b_off = broadcast_offset(out_idx, b.shape(), b.strides());
-		out.data()[flat] = op(a.data()[a_off], b.data()[b_off]);
+	struct Axis {
+		size_t dim, sa, sb;
+	};
+	std::vector<Axis> axes;
+	const size_t rank = out_shape.size();
+	for (size_t i = 0; i < rank; i++) {
+		if (out_shape[i] == 1) continue;
+		size_t sa = 0, sb = 0;
+		if (i + a.ndim() >= rank && a.shape()[i + a.ndim() - rank] != 1) sa = a.strides()[i + a.ndim() - rank];
+		if (i + b.ndim() >= rank && b.shape()[i + b.ndim() - rank] != 1) sb = b.strides()[i + b.ndim() - rank];
+		if (!axes.empty() && axes.back().sa == sa * out_shape[i] && axes.back().sb == sb * out_shape[i]) {
+			axes.back().dim *= out_shape[i];
+			axes.back().sa = sa;
+			axes.back().sb = sb;
+		} else {
+			axes.push_back({out_shape[i], sa, sb});
+		}
 	}
+	if (axes.empty()) axes.push_back({1, 0, 0});
+
+	const size_t inner = axes.back().dim, isa = axes.back().sa, isb = axes.back().sb;
+	const size_t outer = axes.size() - 1;
+	const float* ad = a.data().data();
+	const float* bd = b.data().data();
+	float* od = out.data().data();
+
+	kernels::parallel_range(n, kElementwiseChunk, [&](size_t lo, size_t hi) {
+		std::vector<size_t> idx(outer);
+		size_t a_off = 0, b_off = 0;
+		size_t rows = lo / inner, j = lo % inner;
+		for (size_t d = outer; d-- > 0;) {
+			idx[d] = rows % axes[d].dim;
+			rows /= axes[d].dim;
+			a_off += idx[d] * axes[d].sa;
+			b_off += idx[d] * axes[d].sb;
+		}
+		for (size_t pos = lo; pos < hi;) {
+			size_t len = std::min(inner - j, hi - pos);
+			const float* pa = ad + a_off + j * isa;
+			const float* pb = bd + b_off + j * isb;
+			float* po = od + pos;
+			if (isa == 1 && isb == 1) {
+				for (size_t k = 0; k < len; k++) po[k] = op(pa[k], pb[k]);
+			} else if (isa == 1 && isb == 0) {
+				const float v = *pb;
+				for (size_t k = 0; k < len; k++) po[k] = op(pa[k], v);
+			} else if (isa == 0 && isb == 1) {
+				const float v = *pa;
+				for (size_t k = 0; k < len; k++) po[k] = op(v, pb[k]);
+			} else {
+				for (size_t k = 0; k < len; k++) po[k] = op(pa[k * isa], pb[k * isb]);
+			}
+			pos += len;
+			j = 0;
+			// Advance the odometer over the outer axes
+			for (size_t d = outer; d-- > 0;) {
+				a_off += axes[d].sa;
+				b_off += axes[d].sb;
+				if (++idx[d] < axes[d].dim) break;
+				a_off -= axes[d].sa * axes[d].dim;
+				b_off -= axes[d].sb * axes[d].dim;
+				idx[d] = 0;
+			}
+		}
+	});
 	return out;
 }
 

@@ -1,0 +1,2 @@
+config,label,threads,benchmark,size,forward_ms,backward_ms,optim_ms,total_ms,gflops,spread,runs
+native,pinned,8,mlp_wide,,3.95614,9.01636,1.073,14.1106,,0.0395088,15
