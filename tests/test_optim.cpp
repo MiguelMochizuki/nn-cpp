@@ -7,8 +7,12 @@
 #include "doctest/doctest.h"
 #include "nn/optim/adam.hpp"
 #include "nn/optim/adamw.hpp"
+#include "nn/optim/clip.hpp"
+#include "nn/optim/scheduler.hpp"
 #include "nn/optim/sgd.hpp"
 
+#include <cmath>
+#include <memory>
 #include <stdexcept>
 
 using namespace nn;
@@ -199,4 +203,80 @@ TEST_CASE("AdamW decay shrinks a zero-gradient parameter by 1 - lr*wd per step")
 	CHECK(p.data().get({0}) == doctest::Approx(2.0f * f * f * f).epsilon(1e-6));
 	CHECK(p.data().get({1}) == doctest::Approx(-4.0f * f * f * f).epsilon(1e-6));
 	CHECK(opt.lr() == 0.1f);
+}
+
+TEST_CASE("StepLR decays by gamma every step_size steps") {
+	Value p = Value::leaf(Tensor({1}, 0.0f), true);
+	SGD opt({p}, 0.1f);
+	StepLR sched(opt, 5, 0.5f);
+	CHECK(opt.lr() == 0.1f);
+	std::vector<float> lrs;
+	for (int i = 1; i <= 11; i++) {
+		sched.step();
+		lrs.push_back(opt.lr());
+	}
+	CHECK(lrs[3] == doctest::Approx(0.1f));    // step 4
+	CHECK(lrs[4] == doctest::Approx(0.05f));   // step 5
+	CHECK(lrs[9] == doctest::Approx(0.025f));  // step 10
+	CHECK(sched.step_count() == 11);
+	CHECK(sched.base_lr() == 0.1f);
+	CHECK_THROWS_AS(StepLR(opt, 0), std::invalid_argument);
+}
+
+TEST_CASE("CosineAnnealingLR reaches eta_min at t_max and stays") {
+	Value p = Value::leaf(Tensor({1}, 0.0f), true);
+	SGD opt({p}, 1.0f);
+	CosineAnnealingLR sched(opt, 10, 0.1f);
+	sched.set_step(5);
+	CHECK(opt.lr() == doctest::Approx(0.55f));
+	sched.set_step(10);
+	CHECK(opt.lr() == doctest::Approx(0.1f));
+	sched.step();
+	sched.step();
+	CHECK(opt.lr() == doctest::Approx(0.1f));
+	CHECK_THROWS_AS(CosineAnnealingLR(opt, 0), std::invalid_argument);
+}
+
+TEST_CASE("LinearWarmup ramps to base then follows the inner schedule") {
+	Value p = Value::leaf(Tensor({1}, 0.0f), true);
+	SGD opt({p}, 0.4f);
+	LinearWarmup sched(opt, std::make_unique<StepLR>(opt, 2, 0.5f), 4);
+	CHECK(opt.lr() == 0.0f);
+	sched.step();
+	CHECK(opt.lr() == doctest::Approx(0.1f));
+	sched.set_step(4);
+	CHECK(opt.lr() == doctest::Approx(0.4f));
+	sched.set_step(6);
+	CHECK(opt.lr() == doctest::Approx(0.2f));
+}
+
+TEST_CASE("set_step resumes identically to stepping n times") {
+	Value p = Value::leaf(Tensor({1}, 0.0f), true);
+	SGD a({p}, 0.3f), b({p}, 0.3f);
+	CosineAnnealingLR sa(a, 20), sb(b, 20);
+	for (int i = 0; i < 7; i++) sa.step();
+	sb.set_step(7);
+	CHECK(a.lr() == b.lr());
+	sa.step();
+	sb.step();
+	CHECK(a.lr() == b.lr());
+}
+
+TEST_CASE("clip_grad_norm returns the pre-clip norm and rescales") {
+	Value p = Value::leaf(Tensor({2}, 0.0f), true);
+	p.grad() = Tensor({2}, std::vector<float>{3.0f, 4.0f});
+	CHECK(clip_grad_norm({p}, 10.0f) == doctest::Approx(5.0f));
+	CHECK(p.grad().get({0}) == 3.0f);
+	CHECK(clip_grad_norm({p}, 1.0f) == doctest::Approx(5.0f));
+	float n = std::sqrt(p.grad().get({0}) * p.grad().get({0}) + p.grad().get({1}) * p.grad().get({1}));
+	CHECK(n == doctest::Approx(1.0f).epsilon(1e-5));
+	Value none = Value::leaf(Tensor({2}, 0.0f), true);
+	CHECK(clip_grad_norm({none}, 1.0f) == 0.0f);
+}
+
+TEST_CASE("clip_grad_value clamps each element") {
+	Value p = Value::leaf(Tensor({3}, 0.0f), true);
+	p.grad() = Tensor({3}, std::vector<float>{-5.0f, 0.5f, 7.0f});
+	clip_grad_value({p}, 1.0f);
+	CHECK(p.grad().data() == std::vector<float>{-1.0f, 0.5f, 1.0f});
 }
