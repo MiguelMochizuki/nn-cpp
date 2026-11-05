@@ -65,7 +65,7 @@ private:
  *
  * Attributes:
  * Tensor data: forward value
- * Tensor grad: accumulated dL/d(data), same shape as data
+ * Tensor grad: accumulated dL/d(data), same shape as data (a non-leaf node holds an empty placeholder until backward() sizes it)
  * bool requires_grad: whether this node participates in backward
  * vector<Value> parents: inputs this node was computed from
  * function<void(const Tensor&)> backward_fn: given dL/d(this.data), accumulate into each parent's grad
@@ -77,7 +77,7 @@ struct NodeImpl {
 	std::vector<Value> parents;
 	std::function<void(const Tensor&)> backward_fn;
 
-	NodeImpl(Tensor d, bool rg);
+	NodeImpl(Tensor d, bool rg, bool allocate_grad = true);
 	~NodeImpl();
 };
 
