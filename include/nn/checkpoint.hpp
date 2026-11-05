@@ -20,7 +20,8 @@ namespace nn {
  *
  * Parameters:
  * string path: destination file
- * Module model: model whose named_parameters() are saved as "model.<name>"
+ * Module model: model whose named_parameters() and then named_buffers() are saved as
+ *   "model.<name>"; a buffer name equal to a parameter name throws
  * Optimizer optimizer: optional; its state() is saved as "optim.<name>"
  * int64_t step: caller-defined progress counter (epoch, iteration, ...)
  *
@@ -30,7 +31,8 @@ void save_checkpoint(const std::string& path, const Module& model, const Optimiz
                      int64_t step = 0);
 
 /* Public, restore a checkpoint into a model built with the same architecture. The whole file
- * is validated against model (and optimizer) before anything is modified. Layers without
+ * is validated against model (and optimizer) before anything is modified, buffers included:
+ * a buffer the file lacks fails, naming it, as does any unexpected model.* entry. Layers without
  * parameters leave no trace in the file, so swapping e.g. ReLU for Tanh is not detected
  *
  * Parameters:

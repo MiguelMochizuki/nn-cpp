@@ -11,4 +11,6 @@ add_executable(nn_tests
 )
 target_link_libraries(nn_tests PRIVATE nn_core doctest::doctest)
 
+target_compile_definitions(nn_tests PRIVATE NN_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
 doctest_discover_tests(nn_tests)

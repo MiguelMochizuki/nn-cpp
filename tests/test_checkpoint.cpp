@@ -338,3 +338,100 @@ TEST_CASE("an optimizer snapshot without lr loads and keeps the current lr") {
 	ss.emplace_back("bogus", Tensor({1}, 1.0f));
 	CHECK_THROWS_AS(sgd2.load_state(ss), std::runtime_error);
 }
+
+namespace {
+
+// Test-only module with one parameter and one non-trainable buffer
+class WithBuffer : public Module {
+public:
+	explicit WithBuffer(const std::string& buffer_name = "stat")
+	    : w_(Value::leaf(Tensor({2}, std::vector<float>{1.0f, 2.0f}), true)),
+	      stat_({3}, std::vector<float>{7.0f, 8.0f, 9.0f}),
+	      buffer_name_(buffer_name) {}
+	Value forward(const Value& input) override { return input; }
+	std::vector<Value> parameters() const override { return {w_}; }
+	std::vector<std::pair<std::string, Value>> named_parameters() const override { return {{"w", w_}}; }
+	std::vector<std::pair<std::string, Tensor*>> named_buffers() override { return {{buffer_name_, &stat_}}; }
+	Tensor& stat() { return stat_; }
+
+private:
+	Value w_;
+	Tensor stat_;
+	std::string buffer_name_;
+};
+
+}  // namespace
+
+TEST_CASE("buffers round trip next to parameters") {
+	WithBuffer a, b;
+	a.stat().data() = {1.5f, 2.5f, 3.5f};
+	a.parameters()[0].data().data() = {-1.0f, -2.0f};
+	save_checkpoint(PATH, a, nullptr, 3);
+	CHECK(load_checkpoint(PATH, b) == 3);
+	CHECK(b.stat().data() == std::vector<float>{1.5f, 2.5f, 3.5f});
+	CHECK(b.parameters()[0].data().data() == std::vector<float>{-1.0f, -2.0f});
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("buffers are saved after the parameters and prefixed in Sequential") {
+	Sequential seq;
+	seq.add(std::make_unique<WithBuffer>());
+	save_checkpoint(PATH, seq);
+	std::vector<uint8_t> bytes = read_bytes(PATH);
+	std::string text(bytes.begin(), bytes.end());
+	size_t w = text.find("model.0.w");
+	size_t s = text.find("model.0.stat");
+	CHECK(w != std::string::npos);
+	CHECK(s != std::string::npos);
+	CHECK(w < s);
+	Sequential other;
+	other.add(std::make_unique<WithBuffer>());
+	CHECK_NOTHROW(load_checkpoint(PATH, other));
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("a buffer-less file does not load into a model with buffers and changes nothing") {
+	Sequential plain;
+	plain.add(std::make_unique<Linear>(2, 1));
+	save_checkpoint(PATH, plain);
+	WithBuffer m;
+	std::vector<float> w_before = m.parameters()[0].data().data();
+	try {
+		load_checkpoint(PATH, m);
+		FAIL("expected std::runtime_error");
+	} catch (const std::runtime_error& e) {
+		CHECK(std::string(e.what()).find("model.stat") != std::string::npos);
+	}
+	CHECK(m.stat().data() == std::vector<float>{7.0f, 8.0f, 9.0f});
+	CHECK(m.parameters()[0].data().data() == w_before);
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("a file with buffers does not load into a buffer-less model") {
+	WithBuffer a;
+	save_checkpoint(PATH, a);
+	Sequential plain;
+	plain.add(std::make_unique<Linear>(2, 1));
+	CHECK_THROWS_AS(load_checkpoint(PATH, plain), std::runtime_error);
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("a buffer name colliding with a parameter name throws") {
+	WithBuffer clash("w");
+	CHECK_THROWS_AS(save_checkpoint(PATH, clash), std::runtime_error);
+	CHECK_THROWS_AS(load_checkpoint(PATH, clash), std::runtime_error);
+	std::remove(PATH.c_str());
+}
+
+TEST_CASE("a v1.0.0 checkpoint loads and a parameter-only save is byte-identical to it") {
+	const std::string golden = std::string(NN_TEST_DATA_DIR) + "/linear_v1.ckpt";
+	Sequential m;
+	m.add(std::make_unique<Linear>(3, 2));
+	CHECK(load_checkpoint(golden, m) == 7);
+	auto p = m.named_parameters();
+	CHECK(p[0].second.data().data() == std::vector<float>{0.5f, -1.25f, 2.0f, 3.0f, 0.75f, -0.5f});
+	CHECK(p[1].second.data().data() == std::vector<float>{0.125f, -2.0f});
+	save_checkpoint(PATH, m, nullptr, 7);
+	CHECK(read_bytes(PATH) == read_bytes(golden));
+	std::remove(PATH.c_str());
+}

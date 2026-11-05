@@ -52,6 +52,17 @@ public:
 	 */
 	virtual std::vector<std::pair<std::string, Value>> named_parameters() const { return {}; }
 
+	/* Public, list this layer's non-trainable state tensors (e.g. batch-norm running
+	 * statistics) with stable names; saved and restored by checkpoints. Names must not
+	 * collide with parameter names. Not const so the pointers can be written on load
+	 *
+	 * Parameters: none
+	 *
+	 * Returns vector<pair<string, Tensor*>>: (name, pointer to the live tensor) pairs; empty
+	 * by default
+	 */
+	virtual std::vector<std::pair<std::string, Tensor*>> named_buffers() { return {}; }
+
 	/* Public, switch between training and evaluation behaviour (layers such as dropout and
 	 * batch norm act differently); containers override this to reach their children
 	 *
