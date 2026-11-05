@@ -287,9 +287,9 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 			for (size_t i = 0; i < m; ++i) std::fill(c + i * ldc, c + i * ldc + n, 0.0f);
 		return;
 	}
-	// The B panel is packed once per (jc, pc) by the calling thread and shared
-	// read-only by the workers. Serial B pack is a known ceiling; pack it in
-	// parallel only if a profile shows it.
+	// The B block is packed once per (jc, pc) and shared read-only by the
+	// workers; the pack is split by column panels, which write disjoint runs
+	// of b_pack, so the packed bytes do not depend on the thread count.
 	thread_local AlignedBuffer b_buf;
 	float* b_pack = b_buf.get(kKC * kNC);
 	const size_t blocks = (m + kMC - 1) / kMC;
@@ -298,6 +298,8 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 	// Work split targets: chunks per thread, and the narrowest column run (in kNR panels)
 	constexpr size_t kChunksPerThread = 2;
 	constexpr size_t kMinPanels = 4;
+	// Fewest kNR panels per thread worth packing in parallel (measured: 4 and 8 tie, 1 loses on cnn_large)
+	constexpr size_t kPackMinPanels = 8;
 	const size_t threads = num_threads();
 	const bool serial = threads == 1 || m * n * k < kParallelMin;
 
@@ -306,10 +308,15 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 		for (size_t pc = 0; pc < k; pc += kKC) {
 			size_t kc = std::min(kKC, k - pc);
 			Store mode = pc > 0 ? Store::kContinue : accumulate ? Store::kAdd : Store::kOverwrite;
-			pack_b(trans_b, b, ldb, pc, jc, kc, nc, b_pack);
+			const size_t panels = (nc + kNR - 1) / kNR;
+			auto pack = [&](size_t lo, size_t hi) {
+				size_t j0 = lo * kNR;
+				pack_b(trans_b, b, ldb, pc, jc + j0, kc, std::min(nc, hi * kNR) - j0, b_pack + lo * kc * kNR);
+			};
+			if (serial) pack(0, panels);
+			else parallel_range(panels, kPackMinPanels, pack);
 			// With few row blocks (small m) also split the columns so there are
 			// about kChunksPerThread chunks per thread to balance dynamically.
-			const size_t panels = (nc + kNR - 1) / kNR;
 			size_t col_chunks = 1;
 			if (!serial && blocks < kChunksPerThread * threads)
 				col_chunks = std::max<size_t>(1, std::min((kChunksPerThread * threads + blocks - 1) / blocks,

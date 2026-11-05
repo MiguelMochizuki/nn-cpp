@@ -14,6 +14,7 @@
 #include "nn/nn/sequential.hpp"
 #include "nn/autograd/ops.hpp"
 
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -145,12 +146,22 @@ TEST_CASE("Sequential chains layers and collects all their parameters") {
 }
 
 TEST_CASE("end-to-end gradcheck through a small Linear-ReLU-Linear network") {
-	Sequential model;
-	model.add(std::make_unique<Linear>(2, 3));
-	model.add(std::make_unique<ReLU>());
-	model.add(std::make_unique<Linear>(3, 1));
+	// Fixed parameters: random init could put a pre-activation within the finite-difference step of the ReLU kink
+	auto first = std::make_unique<Linear>(2, 3);
+	first->parameters()[0].data() = Tensor({3, 2}, std::vector<float>{1, 1, -1, 2, 2, -1});
+	first->parameters()[1].data() = Tensor({3}, std::vector<float>{0.5f, 0.5f, -0.5f});
+	auto second = std::make_unique<Linear>(3, 1);
+	second->parameters()[0].data() = Tensor({1, 3}, std::vector<float>{0.7f, -0.4f, 0.9f});
+	second->parameters()[1].data() = Tensor({1}, std::vector<float>{0.1f});
 
 	Value input = Value::leaf(Tensor({2, 2}, std::vector<float>{0.5f, -0.3f, 1.2f, 0.1f}), false);
+	Tensor pre = first->forward(input).data();
+	for (float v : pre.data()) CHECK(std::fabs(v) > 0.3f);  // far from the kink (step is 1e-3)
+
+	Sequential model;
+	model.add(std::move(first));
+	model.add(std::make_unique<ReLU>());
+	model.add(std::move(second));
 	for (Value& p : model.parameters()) {
 		auto f = [&model, &input](Value) { return sum(model.forward(input)); };
 		CHECK(gradcheck(f, p, 1e-3f, 0.1f));
