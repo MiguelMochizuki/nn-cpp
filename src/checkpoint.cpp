@@ -187,8 +187,7 @@ Entry tensor_entry(const std::string& name, const Tensor& t) {
  * Returns std::vector<std::pair<std::string, Tensor*>>: The buffers; throws std::runtime_error on a collision
  */
 std::vector<std::pair<std::string, Tensor*>> checked_buffers(const Module& model) {
-	// named_buffers is non-const so loading can write through the pointers; saving only reads
-	auto buffers = const_cast<Module&>(model).named_buffers();
+	auto buffers = model.named_buffers();
 	std::set<std::string> names;
 	for (const auto& p : model.named_parameters()) names.insert(p.first);
 	for (const auto& b : buffers) {

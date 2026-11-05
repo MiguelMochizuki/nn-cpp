@@ -60,7 +60,7 @@ public:
 	 *
 	 * Returns vector<pair<string, Tensor*>>: (name, pointer) pairs
 	 */
-	std::vector<std::pair<std::string, Tensor*>> named_buffers() override;
+	std::vector<std::pair<std::string, Tensor*>> named_buffers() const override;
 
 	/* Public, set the mode on every child, then on this container
 	 *

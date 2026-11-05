@@ -351,12 +351,12 @@ public:
 	Value forward(const Value& input) override { return input; }
 	std::vector<Value> parameters() const override { return {w_}; }
 	std::vector<std::pair<std::string, Value>> named_parameters() const override { return {{"w", w_}}; }
-	std::vector<std::pair<std::string, Tensor*>> named_buffers() override { return {{buffer_name_, &stat_}}; }
+	std::vector<std::pair<std::string, Tensor*>> named_buffers() const override { return {{buffer_name_, &stat_}}; }
 	Tensor& stat() { return stat_; }
 
 private:
 	Value w_;
-	Tensor stat_;
+	mutable Tensor stat_;
 	std::string buffer_name_;
 };
 
