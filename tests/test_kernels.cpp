@@ -22,7 +22,7 @@ constexpr float kSentinel = 1e30f;
 
 /**
  * Which microkernel this build should pick for sgemm: AVX2/FMA when the
- * compiler targets both, otherwise SSE2 or scalar
+ * compiler targets both, otherwise SSE2 or the unpacked loop
  */
 #if defined(__AVX2__) && defined(__FMA__)
 constexpr bool kExpectAvx2 = true;
