@@ -8,17 +8,17 @@ Source: `docs/baseline/native-pinned-t8.csv`, 15 runs per row, times in ms as re
 
 | workload | forward | backward | optimizer | total | fwd / bwd / opt share | spread |
 |---|---|---|---|---|---|---|
-| xor | 0.0066 | 0.0094 | 0.00026 | 0.0162 | 41% / 58% / 2% | 0.127 |
-| mlp_wide | 79.8 | 122.6 | 1.73 | 209.4 | 38% / 59% / 1% | 0.118 |
-| cnn_mnist | 4.66 | 17.8 | 0.067 | 22.6 | 21% / 79% / 0.3% | 0.013 |
-| cnn_large | 343.5 | 740.4 | 0.126 | 1085.8 | 32% / 68% / 0.01% | 0.035 |
-| mlp_adam | 68.8 | 111.2 | 5.78 | 186.8 | 37% / 60% / 3% | 0.030 |
-| infer_nograd_b1 | 1.38 | 0 | 0 | 1.38 | forward only | 0.014 |
-| infer_nograd_b256 | 32.1 | 0 | 0 | 32.1 | forward only | 0.025 |
+| xor | 0.0061 | 0.0086 | 0.00024 | 0.0149 | 41% / 57% / 2% | 0.028 |
+| mlp_wide | 69.4 | 102.5 | 1.55 | 173.5 | 40% / 59% / 1% | 0.053 |
+| cnn_mnist | 3.57 | 14.0 | 0.054 | 17.6 | 20% / 80% / 0.3% | 0.043 |
+| cnn_large | 336.2 | 693.0 | 0.117 | 1030.9 | 33% / 67% / 0.01% | 0.014 |
+| mlp_adam | 63.7 | 102.0 | 5.28 | 171.2 | 37% / 60% / 3% | 0.024 |
+| infer_nograd_b1 | 1.13 | 0 | 0 | 1.13 | forward only | 0.014 |
+| infer_nograd_b256 | 26.1 | 0 | 0 | 26.1 | forward only | 0.025 |
 
-Measurement caveats: `backward_ms` includes `zero_grad`; `forward_ms` includes loss construction; the `infer_nograd` rows have 0 in backward and optimizer by design. Backward is 58% to 79% of a training step, so it is the larger target in every training workload.
+Measurement caveats: `backward_ms` includes `zero_grad`; `forward_ms` includes loss construction; the `infer_nograd` rows have 0 in backward and optimizer by design. Backward is 57% to 80% of a training step, so it is the larger target in every training workload.
 
-Caveat: this t8 file was recorded on a busy machine. The mlp_wide row (209 ms) is inflated against about 170 ms in the quiet Task 7 check runs, and mlp_adam (186.8 ms) is faster than mlp_wide, which does not hold on a quiet machine. A re-record on a quiet machine is still pending; treat this table as approximate.
+Re-recorded after the first commit of this file (which had mlp_wide at 209 ms, inflated by load). This version has mlp_wide at 173.5 ms, in line with the quiet check runs. mlp_adam (171.2 ms) and mlp_wide (173.5 ms) are within each other's spread (0.053), so their order is not meaningful. Firefox was still open at low load (load average about 1), so treat the numbers as good to roughly 5%, not 3%.
 
 ## Measured noise (Task 7)
 
@@ -27,15 +27,15 @@ Two back-to-back native pinned t8 runs, after closing Firefox (load average abou
 - mlp_wide: 171.7 vs 166.9 ms (1.03x, 3%), spread 0.027 / 0.023.
 - cnn_mnist: 17.52 vs 17.35 ms (1.01x, 1%), spread 0.029 / 0.010.
 - Other rows ranged within a 0.78x to 0.95x ratio band between the two runs (matmul/16 0.78x); xor 2.60x (a 16 microsecond workload, not usable).
-- With Firefox running, the same check gave 13% on mlp_wide, so the noise bar for a phase is "more than about 3% on a quiet machine, more than about 13% on a busy one". The committed t8 CSV was a separate run, so its absolute numbers differ from the Task 7 check runs by up to the amounts above (mlp_wide total 209 ms here vs about 170 ms there). Compare phases only against a fresh baseline taken the same session.
+- With Firefox running, the same check gave 13% on mlp_wide, so the noise bar for a phase is "more than about 3% on a quiet machine, more than about 13% on a busy one". The committed t8 CSV is a separate run from the check runs (mlp_wide 173.5 ms there vs 171.7 and 166.9 ms in the checks). Compare phases only against a fresh baseline taken the same session.
 
 ## matmul GFLOP/s (native, pinned, t8)
 
 | n | 8 | 16 | 32 | 64 | 128 | 256 | 512 | 1024 | 2048 |
 |---|---|---|---|---|---|---|---|---|---|
-| GFLOP/s | 5.3 | 13.4 | 19.7 | 27.8 | 23.5 | 23.8 | 21.9 | 25.2 | 13.2 |
+| GFLOP/s | 7.1 | 17.6 | 25.5 | 36.2 | 31.3 | 30.2 | 27.0 | 29.0 | 13.9 |
 
-Context (estimate, not measured): one P-core at about 4.4 GHz with 2 FMA ports x 8 floats x 2 flops = 32 flop/cycle gives about 140 GFLOP/s AVX2 single-core peak. The current matmul sits at roughly 15% to 20% of that for n from 64 to 1024 and drops to about 9% at n=2048 (cache misses). The usable headroom for a single-threaded kernel is therefore several times, before any threading.
+Context (estimate, not measured): one P-core at about 4.4 GHz with 2 FMA ports x 8 floats x 2 flops = 32 flop/cycle gives about 140 GFLOP/s AVX2 single-core peak. The current matmul sits at roughly 19% to 26% of that for n from 64 to 1024 and drops to about 10% at n=2048 (cache misses). The usable headroom for a single-threaded kernel is therefore several times, before any threading.
 
 Thread points: the library has no thread pool yet, so the t1, t2, t4, t8 and unpinned t12 files all measure single-threaded speed; the thread count only affects which CPUs the process is pinned to and the recorded label. They become meaningful after a threading phase. The committed t1, t2 and t4 files were taken with `taskset -c 0-(n-1)`, which makes no difference for a single-threaded library; `run_baseline.sh` now pins all thread points to cpus 0-7 (cpus 0/1, 2/3, 4/5, 6/7 are hyperthread siblings).
 
