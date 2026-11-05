@@ -377,3 +377,27 @@ TEST_CASE("sgemm and sgemm_portable are bitwise identical for any thread count")
 	set_num_threads(8);
 	check(make_problem(false, false, 2 * kMC + 5, kNC + 5, kKC + 5, 0, seed++), false, sgemm);
 }
+
+TEST_CASE("sgemm with a parallel B pack is bitwise identical across thread counts") {
+	struct Restore {
+		size_t saved = num_threads();
+		~Restore() { set_num_threads(saved); }
+	} restore;
+	// Wide n and k past kKC, so each (jc, pc) block packs many column panels
+	// (and a ragged last one) on the workers
+	unsigned seed = 20000;
+	for (Gemm fn : {static_cast<Gemm>(sgemm), static_cast<Gemm>(sgemm_portable)})
+		for (int tb = 0; tb < 2; ++tb) {
+			Problem p = make_problem(false, tb, 40, kNC + 37, kKC + 5, 0, seed++);
+			set_num_threads(1);
+			std::vector<float> want = p.c;
+			fn(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb, want.data(), p.ldc, false);
+			for (size_t t : {3, 8}) {
+				set_num_threads(t);
+				std::vector<float> got = p.c;
+				fn(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb, got.data(), p.ldc, false);
+				INFO("threads=", t, " tb=", tb);
+				CHECK(std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0);
+			}
+		}
+}
