@@ -6,6 +6,7 @@
 
 #include "doctest/doctest.h"
 #include "nn/kernels/gemm.hpp"
+#include "nn/kernels/parallel.hpp"
 #include "reference_gemm.hpp"
 
 #include <cmath>
@@ -336,4 +337,42 @@ TEST_CASE("sgemm is deterministic") {
 		sgemm(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb, c2.data(), p.ldc, acc);
 		CHECK(std::memcmp(c1.data(), c2.data(), c1.size() * sizeof(float)) == 0);
 	}
+}
+
+TEST_CASE("sgemm and sgemm_portable are bitwise identical for any thread count") {
+	struct Restore {
+		size_t saved = num_threads();
+		~Restore() { set_num_threads(saved); }
+	} restore;
+	const size_t ms[] = {1, 7, 33, 257, 600};
+	const size_t nks[] = {33, 257};
+	unsigned seed = 10000;
+	for (Gemm fn : {static_cast<Gemm>(sgemm), static_cast<Gemm>(sgemm_portable)})
+		for (int ta = 0; ta < 2; ++ta)
+			for (int tb = 0; tb < 2; ++tb)
+				for (int acc = 0; acc < 2; ++acc)
+					for (size_t m : ms)
+						for (size_t n : nks)
+							for (size_t k : nks) {
+								Problem p = make_problem(ta, tb, m, n, k, 2, seed++);
+								set_num_threads(1);
+								std::vector<float> want = p.c;
+								fn(p.ta, p.tb, m, n, k, p.a.data(), p.lda, p.b.data(), p.ldb,
+									want.data(), p.ldc, acc);
+								for (size_t t : {2, 4, 8}) {
+									set_num_threads(t);
+									std::vector<float> got = p.c;
+									fn(p.ta, p.tb, m, n, k, p.a.data(), p.lda, p.b.data(), p.ldb,
+										got.data(), p.ldc, acc);
+									INFO("threads=", t, " ta=", ta, " tb=", tb, " acc=", acc,
+										" m=", m, " n=", n, " k=", k);
+									CHECK(std::memcmp(got.data(), want.data(),
+										got.size() * sizeof(float)) == 0);
+								}
+								set_num_threads(1);
+								check(p, acc, fn);
+							}
+	// A problem past every block size, on 8 threads
+	set_num_threads(8);
+	check(make_problem(false, false, 2 * kMC + 5, kNC + 5, kKC + 5, 0, seed++), false, sgemm);
 }

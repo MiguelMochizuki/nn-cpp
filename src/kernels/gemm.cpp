@@ -5,6 +5,7 @@
  */
 
 #include "nn/kernels/gemm.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -286,9 +287,15 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 			for (size_t i = 0; i < m; ++i) std::fill(c + i * ldc, c + i * ldc + n, 0.0f);
 		return;
 	}
-	thread_local AlignedBuffer a_buf, b_buf;
-	float* a_pack = a_buf.get(kMC * kKC);
+	// The B panel is packed once per (jc, pc) by the calling thread and shared
+	// read-only by the workers. ponytail: serial B pack is a ceiling, pack it in
+	// parallel only if a profile shows it.
+	thread_local AlignedBuffer b_buf;
 	float* b_pack = b_buf.get(kKC * kNC);
+	const size_t blocks = (m + kMC - 1) / kMC;
+	// Below this many multiply-adds the fork/join cost outweighs the gain
+	constexpr size_t kParallelMin = size_t(1) << 18;
+	const bool serial = m * n * k < kParallelMin;
 
 	for (size_t jc = 0; jc < n; jc += kNC) {
 		size_t nc = std::min(kNC, n - jc);
@@ -296,7 +303,13 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 			size_t kc = std::min(kKC, k - pc);
 			Store mode = pc > 0 ? Store::kContinue : accumulate ? Store::kAdd : Store::kOverwrite;
 			pack_b(trans_b, b, ldb, pc, jc, kc, nc, b_pack);
-			for (size_t ic = 0; ic < m; ic += kMC) {
+			// Each chunk owns the C rows of one kMC block and packs its own A
+			// block, so there is no cross-thread accumulation and the result does
+			// not depend on the thread count.
+			auto block = [&](size_t blk) {
+				thread_local AlignedBuffer a_buf;
+				float* a_pack = a_buf.get(kMC * kKC);
+				size_t ic = blk * kMC;
 				size_t mc = std::min(kMC, m - ic);
 				pack_a(trans_a, a, lda, ic, pc, mc, kc, a_pack);
 				for (size_t jr = 0; jr < nc; jr += kNR) {
@@ -307,6 +320,11 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 							c + (ic + ir) * ldc + jc + jr, ldc, mr, nr, mode);
 					}
 				}
+			};
+			if (serial || blocks == 1) {
+				for (size_t blk = 0; blk < blocks; ++blk) block(blk);
+			} else {
+				parallel_for(blocks, block);
 			}
 		}
 	}
