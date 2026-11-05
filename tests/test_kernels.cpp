@@ -22,7 +22,7 @@ constexpr float kSentinel = 1e30f;
 
 /**
  * Which microkernel this build should pick for sgemm: AVX2/FMA when the
- * compiler targets both, otherwise the portable one
+ * compiler targets both, otherwise SSE2 or scalar
  */
 #if defined(__AVX2__) && defined(__FMA__)
 constexpr bool kExpectAvx2 = true;
@@ -166,7 +166,7 @@ TEST_CASE("sgemm_portable matches reference over sizes and flags") {
 
 TEST_CASE("sgemm_portable matches reference past each block size") {
 	struct Dims { size_t m, n, k; };
-	const Dims cases[] = {{kMC + 5, 7, 33}, {7, 33, kKC + 5}, {7, kNC + 5, 33}};
+	const Dims cases[] = {{kMC + 5, 7, 33}, {7, 33, kKC + 5}, {7, kNC + 5, 33}, {7, kNC + 5, kKC + 5}};
 	unsigned seed = 1000;
 	for (int ta = 0; ta < 2; ++ta)
 		for (int tb = 0; tb < 2; ++tb)
@@ -228,6 +228,81 @@ TEST_CASE("sgemm_portable propagates Inf and NaN like the reference") {
 	}
 }
 
+TEST_CASE("sgemm_unpacked matches reference over sizes and flags") {
+	const size_t sizes[] = {1, 7, 33, 257};
+	unsigned seed = 6000;
+	for (int ta = 0; ta < 2; ++ta)
+		for (int tb = 0; tb < 2; ++tb)
+			for (int acc = 0; acc < 2; ++acc)
+				for (size_t m : sizes)
+					for (size_t n : sizes)
+						for (size_t k : sizes)
+							check(make_problem(ta, tb, m, n, k, 0, seed++), acc, sgemm_unpacked);
+}
+
+TEST_CASE("sgemm_unpacked matches reference past each block size") {
+	struct Dims { size_t m, n, k; };
+	const Dims cases[] = {{kMC + 5, 7, 33}, {7, 33, kKC + 5}, {7, kNC + 5, 33}, {7, kNC + 5, kKC + 5}};
+	unsigned seed = 7000;
+	for (int ta = 0; ta < 2; ++ta)
+		for (int tb = 0; tb < 2; ++tb)
+			for (int acc = 0; acc < 2; ++acc)
+				for (const Dims& d : cases)
+					check(make_problem(ta, tb, d.m, d.n, d.k, 0, seed++), acc, sgemm_unpacked);
+}
+
+TEST_CASE("sgemm_unpacked with zero-size dimensions") {
+	struct Dims { size_t m, n, k; };
+	const Dims cases[] = {{0, 5, 4}, {3, 0, 4}, {3, 5, 0}};
+	for (const Dims& d : cases) {
+		for (int acc = 0; acc < 2; ++acc) {
+			const size_t ldc = 6;
+			std::vector<float> a(16, 1.0f), b(32, 1.0f), c(4 * ldc, kSentinel);
+			for (size_t i = 0; i < d.m; ++i)
+				for (size_t j = 0; j < d.n; ++j) c[i * ldc + j] = 2.0f;
+			sgemm_unpacked(false, false, d.m, d.n, d.k, a.data(), d.k ? d.k : 1, b.data(),
+				d.n ? d.n : 1, c.data(), ldc, acc);
+			INFO("m=", d.m, " n=", d.n, " k=", d.k, " acc=", acc);
+			for (size_t i = 0; i < 4; ++i) {
+				for (size_t j = 0; j < ldc; ++j) {
+					bool inside = i < d.m && j < d.n;
+					float want = inside ? (acc ? 2.0f : 0.0f) : kSentinel;
+					CHECK(c[i * ldc + j] == want);
+				}
+			}
+		}
+	}
+}
+
+TEST_CASE("sgemm_unpacked respects leading dimensions wider than the width") {
+	unsigned seed = 8000;
+	for (int ta = 0; ta < 2; ++ta)
+		for (int tb = 0; tb < 2; ++tb)
+			for (int acc = 0; acc < 2; ++acc)
+				check(make_problem(ta, tb, 7, 33, 33, 3, seed++), acc, sgemm_unpacked);
+}
+
+TEST_CASE("sgemm_unpacked propagates Inf and NaN like the reference") {
+	const float inf = std::numeric_limits<float>::infinity();
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	unsigned seed = 9000;
+	for (int ta = 0; ta < 2; ++ta) {
+		for (int tb = 0; tb < 2; ++tb) {
+			for (int acc = 0; acc < 2; ++acc) {
+				Problem p = make_problem(ta, tb, 7, 33, 17, 0, seed++);
+				// op(A)(2, 0) is +Inf and row 0 of op(B) cycles +1, -1, 0, so row 2
+				// of C holds +Inf, -Inf and NaN (Inf * 0); op(B)(5, 3) is NaN, so
+				// column 3 of C is NaN.
+				p.a[ta ? 2 : 2 * p.lda] = inf;
+				for (size_t j = 0; j < p.n; ++j)
+					p.b[tb ? j * p.ldb : j] = j % 3 == 0 ? 1.0f : j % 3 == 1 ? -1.0f : 0.0f;
+				p.b[tb ? 3 * p.ldb + 5 : 5 * p.ldb + 3] = nan;
+				check(p, acc, sgemm_unpacked);
+			}
+		}
+	}
+}
+
 TEST_CASE("sgemm matches reference and portable path") {
 	CHECK(sgemm_uses_avx2() == kExpectAvx2);
 	const size_t sizes[] = {1, 7, 33, 257};
@@ -243,7 +318,7 @@ TEST_CASE("sgemm matches reference and portable path") {
 							check(p, acc, sgemm, sgemm_portable);
 						}
 	struct Dims { size_t m, n, k; };
-	const Dims cases[] = {{kMC + 5, 7, 33}, {7, 33, kKC + 5}, {7, kNC + 5, 33}};
+	const Dims cases[] = {{kMC + 5, 7, 33}, {7, 33, kKC + 5}, {7, kNC + 5, 33}, {7, kNC + 5, kKC + 5}};
 	for (int ta = 0; ta < 2; ++ta)
 		for (int tb = 0; tb < 2; ++tb)
 			for (int acc = 0; acc < 2; ++acc) {

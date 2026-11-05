@@ -71,6 +71,20 @@ void sgemm_portable(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 		float* c, size_t ldc, bool accumulate);
 
 /**
+ * Same contract as sgemm, but a plain transpose-aware axpy loop with no
+ * microkernel and no packing of A (a transposed B is copied a few depth rows
+ * at a time so the inner loop stays unit-stride). It is what sgemm uses on targets with neither AVX2/FMA nor
+ * SSE2; it is always compiled so tests can exercise it in any build.
+ *
+ * Parameters: as sgemm
+ *
+ * Returns void
+ */
+void sgemm_unpacked(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
+		const float* a, size_t lda, const float* b, size_t ldb,
+		float* c, size_t ldc, bool accumulate);
+
+/**
  * Reports which microkernel sgemm was compiled with
  *
  * Returns bool: true for the AVX2/FMA microkernel, false for the SSE2 or the

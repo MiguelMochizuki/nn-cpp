@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <new>
+#include <vector>
 
 #if defined(__AVX2__) && defined(__FMA__)
 #define NN_GEMM_AVX2 1
@@ -319,6 +320,57 @@ void sgemm_portable(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 	blocked(micro_portable, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
 }
 
+void sgemm_unpacked(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
+		const float* a, size_t lda, const float* b, size_t ldb,
+		float* c, size_t ldc, bool accumulate) {
+	if (m == 0 || n == 0) return;
+	if (!accumulate) {
+		for (size_t i = 0; i < m; ++i) std::fill(c + i * ldc, c + i * ldc + n, 0.0f);
+	}
+	// A transposed B is copied kBlock depth rows at a time into a row-major
+	// buffer, so both layouts feed the same unit-stride axpy loop
+	constexpr size_t kBlock = 64;
+	std::vector<float> bt;
+	if (trans_b) bt.resize(std::min(k, kBlock) * n);
+	for (size_t q0 = 0; q0 < k; q0 += kBlock) {
+		const size_t qn = std::min(kBlock, k - q0);
+		const float* bb = b + q0 * ldb;
+		size_t bld = ldb;
+		if (trans_b) {
+			for (size_t j = 0; j < n; ++j)
+				for (size_t q = 0; q < qn; ++q) bt[q * n + j] = b[j * ldb + q0 + q];
+			bb = bt.data();
+			bld = n;
+		}
+		for (size_t i = 0; i < m; ++i) {
+			float* ci = c + i * ldc;
+			size_t q = 0;
+			// Four depth steps per pass over the C row cut its load/store traffic
+			for (; q + 4 <= qn; q += 4) {
+				float a0, a1, a2, a3;
+				if (trans_a) {
+					const float* ap = a + (q0 + q) * lda + i;
+					a0 = ap[0]; a1 = ap[lda]; a2 = ap[2 * lda]; a3 = ap[3 * lda];
+				} else {
+					const float* ap = a + i * lda + q0 + q;
+					a0 = ap[0]; a1 = ap[1]; a2 = ap[2]; a3 = ap[3];
+				}
+				const float* b0 = bb + q * bld;
+				const float* b1 = b0 + bld;
+				const float* b2 = b1 + bld;
+				const float* b3 = b2 + bld;
+				for (size_t j = 0; j < n; ++j)
+					ci[j] += a0 * b0[j] + a1 * b1[j] + a2 * b2[j] + a3 * b3[j];
+			}
+			for (; q < qn; ++q) {
+				const float av = trans_a ? a[(q0 + q) * lda + i] : a[i * lda + q0 + q];
+				const float* bq = bb + q * bld;
+				for (size_t j = 0; j < n; ++j) ci[j] += av * bq[j];
+			}
+		}
+	}
+}
+
 void sgemm(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 		const float* a, size_t lda, const float* b, size_t ldb,
 		float* c, size_t ldc, bool accumulate) {
@@ -327,7 +379,7 @@ void sgemm(bool trans_a, bool trans_b, size_t m, size_t n, size_t k,
 #elif defined(NN_GEMM_SSE2)
 	blocked(micro_sse2, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
 #else
-	blocked(micro_portable, trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
+	sgemm_unpacked(trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc, accumulate);
 #endif
 }
 
