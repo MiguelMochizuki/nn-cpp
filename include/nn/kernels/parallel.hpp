@@ -38,7 +38,10 @@ void set_num_threads(size_t n);
  * shared counter, so which thread runs which chunk varies between runs and
  * fn must not depend on it. Runs as a plain loop, without touching the pool,
  * when n_chunks <= 1, num_threads() == 1, or when called from a pool worker
- * (nested calls). An exception escaping fn terminates the process.
+ * (nested calls). An exception escaping fn terminates the process. Do not
+ * call from static destructors or atexit handlers (the pool may already be
+ * gone). NN_NUM_THREADS has no upper bound; a failed thread start terminates
+ * the process.
  *
  * Parameters:
  * size_t n_chunks: Number of chunks

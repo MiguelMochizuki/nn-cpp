@@ -288,7 +288,7 @@ void blocked(Micro micro, bool trans_a, bool trans_b, size_t m, size_t n, size_t
 		return;
 	}
 	// The B panel is packed once per (jc, pc) by the calling thread and shared
-	// read-only by the workers. ponytail: serial B pack is a ceiling, pack it in
+	// read-only by the workers. Serial B pack is a known ceiling; pack it in
 	// parallel only if a profile shows it.
 	thread_local AlignedBuffer b_buf;
 	float* b_pack = b_buf.get(kKC * kNC);

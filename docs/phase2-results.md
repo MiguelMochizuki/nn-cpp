@@ -78,7 +78,7 @@ Portable:
 
 Four threads on cpus 0,2,4,6 (one per physical core, native, median of 3): mlp_wide 33.6, mlp_adam 30.4, cnn_mnist 5.8, cnn_large 463.7 ms, equal to 8 threads on 0-7.
 
-Thread policy: the default stays `hardware_concurrency()` (12 here, including the 4 E-cores). Native gets nothing from threads beyond the 4 physical P-cores; cnn_mnist is 30% slower at 12 threads than at 4 to 8 (7.8 vs 5.8 ms, though still no slower than 1 thread) and matmul 2048 is 22% slower. The portable kernel (not FMA-bound) does gain from 12 threads (mlp_wide 38.8 vs 44.5). Whether to cap the default at physical cores is left as a decision.
+Thread policy: the default stays `hardware_concurrency()` (12 here, including the 4 E-cores). Native gets nothing from threads beyond the 4 physical P-cores; cnn_mnist is 34% slower at 12 threads than at 4 to 8 (7.8 vs 5.8 ms, though still no slower than 1 thread) and matmul 2048 is 22% slower. The portable kernel (not FMA-bound) does gain from 12 threads (mlp_wide 38.8 vs 44.5). Whether to cap the default at physical cores is left as a decision.
 
 ## Exit rule
 

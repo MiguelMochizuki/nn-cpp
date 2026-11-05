@@ -340,6 +340,7 @@ TEST_CASE("sgemm is deterministic") {
 }
 
 TEST_CASE("sgemm and sgemm_portable are bitwise identical for any thread count") {
+	// Restores the thread count when the test scope ends
 	struct Restore {
 		size_t saved = num_threads();
 		~Restore() { set_num_threads(saved); }
