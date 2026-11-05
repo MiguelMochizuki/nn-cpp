@@ -25,7 +25,7 @@ include/nn/
   nn/           Module, layers, losses and Sequential
   optim/        Optimizer, SGD and Adam
   data/         Dataset and DataLoader
-  kernels/      gemm.hpp: blocked sgemm with AVX2/FMA, SSE2 and scalar microkernels
+  kernels/      gemm.hpp: blocked sgemm with AVX2/FMA and SSE2 microkernels, unpacked loop elsewhere
   tensor.hpp    the Tensor type
   checkpoint.hpp  save and load of weights and optimizer state
 src/            implementations, mirroring include/nn
@@ -41,7 +41,7 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
-This builds the `nn_core` static library, the example apps, and the test suite (`ctest`/[doctest](https://github.com/doctest/doctest), fetched automatically). Tests can be skipped with `-DNN_BUILD_TESTS=OFF`; examples with `-DNN_BUILD_APPS=OFF`. `-DNN_NATIVE=ON` builds for the host CPU and enables the AVX2/FMA GEMM microkernel.
+This builds the `nn_core` static library, the example apps, and the test suite (`ctest`/[doctest](https://github.com/doctest/doctest), fetched automatically). Tests can be skipped with `-DNN_BUILD_TESTS=OFF`; examples with `-DNN_BUILD_APPS=OFF`. `-DNN_NATIVE=ON` builds for the host CPU, which on a CPU with AVX2 and FMA enables the AVX2/FMA GEMM microkernel.
 
 Run the tests:
 
@@ -194,7 +194,7 @@ Because every layer's `forward()` is expressed purely in terms of these differen
 
 ## Scope
 
-This project targets clarity and correctness over raw throughput: matrix products go through a cache-blocked, single-threaded GEMM kernel (`nn/kernels/gemm.hpp`) with an AVX2/FMA microkernel (only with `-DNN_NATIVE=ON`), an SSE2 microkernel for plain x86-64 builds and a scalar fallback elsewhere; there are still no threads. The tensor's dtype is fixed to `float`; a runtime-selectable dtype is a natural future extension but is not implemented here.
+This project targets clarity and correctness over raw throughput: matrix products go through a cache-blocked, single-threaded GEMM kernel (`nn/kernels/gemm.hpp`) with an AVX2/FMA microkernel (when compiled for AVX2 and FMA, for example `-DNN_NATIVE=ON` on such a CPU), an SSE2 microkernel on other x86-64 builds and an unpacked transpose-aware loop on other targets; there are still no threads. The tensor's dtype is fixed to `float`; a runtime-selectable dtype is a natural future extension but is not implemented here.
 
 ## Documentation Conventions
 

@@ -6,11 +6,11 @@ Reference: commit b7856c8 (main). New: branch `perf/phase1-matmul` at a340e2c (a
 
 ## History
 
-The first measurement (commit d8804a6) recorded DROP: the native build gained 2.17x / 3.60x, but the portable build used the scalar kernel and was slower than the old loop (mlp_wide 0.70x, cnn_large 0.86x, mlp_adam 0.70x, infer_nograd_b256 0.65x). Task 6 added an SSE2 microkernel (commit 5a66d52) used when AVX2/FMA is absent on x86-64. This document is the final measurement with that kernel and replaces the earlier one.
+The first measurement (commit d8804a6) recorded DROP: the native build gained 2.17x / 3.60x, but the portable build used the scalar kernel and was slower than the old loop (mlp_wide 0.70x, cnn_large 0.86x, mlp_adam 0.70x, infer_nograd_b256 0.65x). Commit 5a66d52 added an SSE2 microkernel used when AVX2/FMA is absent on x86-64. This document is the final measurement with that kernel and replaces the earlier one.
 
 ## What shipped
 
-- `include/nn/kernels/gemm.hpp`, `src/kernels/gemm.cpp`: cache-blocked, packed, single-threaded `sgemm` with transpose flags. Microkernels: AVX2/FMA (only with `-DNN_NATIVE=ON`), SSE2 (plain x86-64), scalar (other targets).
+- `include/nn/kernels/gemm.hpp`, `src/kernels/gemm.cpp`: cache-blocked, packed, single-threaded `sgemm` with transpose flags. Microkernels: AVX2/FMA (when compiled for AVX2 and FMA, for example `-DNN_NATIVE=ON` on such a CPU), SSE2 (other x86-64 builds); other targets use the unpacked loop `sgemm_unpacked`.
 - `Tensor::matmul` routes through `sgemm`; new op `matmul_bt`; Linear and conv2d backward use the transpose flags instead of copies.
 
 ## Method
@@ -32,7 +32,7 @@ The stop gate was 10% pairwise between old runs on cnn_mnist or mlp_wide total_m
 | new portable cnn_mnist | 9.151, 9.153, 9.530 | +4.1% |
 | new portable mlp_wide | 87.087, 86.943, 90.079 | +3.6% |
 
-Old native mlp_wide run3 exceeded the 10% gate by 0.3 points, on one run. The controller ruled to accept the median of three and continue. The median (167.578) is unaffected by the outlier, and the measured effects (2x to 3.5x) are far above the 5% bar, so no observed noise level changes the verdict.
+Old native mlp_wide run3 exceeded the 10% gate by 0.3 points, on one run. The run was accepted on the median of three. The slow run was not a single bad row: old-native run3 was slow on every row (mlp_adam +8.4%, cnn_large +6.4%, infer_nograd_b256 +5.5%) and the new-native run3 matmul sweep was 15 to 18% low, so it was a slow machine period; the medians and the verdict are unaffected. The median (167.578) is unaffected by the outlier, and the measured effects (2x to 3.5x) are far above the 5% bar, so no observed noise level changes the verdict.
 
 ## Native (medians of three)
 
@@ -110,7 +110,7 @@ Raw output in `docs/baseline/phase1/mnist-{native,portable}.txt`. The native wal
 ## Known caveats
 
 - **cnn_mnist forward is slower than before** (about 4.3 ms vs 3.5 ms native, 4.7 vs 3.8 portable). This is not GEMM: the forward matmuls take about 0.5 ms of it. It comes from glibc heap trim and regrow (minor page faults roughly 28k to 54k per `perf stat`); with `GLIBC_TUNABLES` pinning the allocator, the new forward was about 2.1 ms vs 3.6 ms old. A later allocation-reuse phase should address it. Backward more than compensates (13.9 to 3.6 ms), so the total is still 2.17x.
-- **Non-x86 targets** still use the scalar microkernel (about 10 GFLOP/s), which is slower than the old loop (20 to 24). They are not covered by this guard (a NEON kernel would be the fix).
+- **Non-x86 targets** now use the unpacked loop `sgemm_unpacked` instead of the slow scalar microkernel (about 10 GFLOP/s). It was checked on x86 by direct call and not measured on ARM hardware; they are not covered by this guard (a NEON kernel would be the further fix).
 - `micro_sse2` is compiled only when AVX2/FMA is absent, so the native build's tests do not run it, and vice versa; each is exercised by its own build's `ctest`.
 - cnn_mnist per-run spread is high (0.26 to 0.31) in all sets; xor (microseconds) is noise.
 - A fresh `perf` profile belongs at the start of Phase 2.
