@@ -14,8 +14,8 @@ using namespace nn;
 
 namespace {
 
-std::vector<uint32_t> draw(std::mt19937 g) {
-	std::vector<uint32_t> v;
+std::vector<std::uint32_t> draw(std::mt19937 g) {
+	std::vector<std::uint32_t> v;
 	for (int i = 0; i < 8; i++) {
 		v.push_back(g());
 	}
@@ -84,4 +84,14 @@ TEST_CASE("DataLoaders created in the same order shuffle identically") {
 	CHECK(first_batch(a1) == first_batch(b1));
 	CHECK(first_batch(a2) == first_batch(b2));
 	CHECK(first_batch(a1) != first_batch(a2));
+}
+
+TEST_CASE("stream hashing is pinned across platforms") {
+	CHECK(detail::fnv1a("a") == 0xaf63dc4c8601ec8cULL);
+	CHECK(detail::fnv1a("dataloader") == 9636703306727871938ULL);
+	CHECK(detail::splitmix64(0) == 16294208416658607535ULL);
+	CHECK(detail::splitmix64(12345) == 2454886589211414944ULL);
+	manual_seed(7);
+	std::mt19937 g = derive_generator("a");
+	CHECK(g() == 2730421840u);
 }

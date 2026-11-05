@@ -401,8 +401,9 @@ Tensor Tensor::full(std::vector<size_t> shape, float v) { return Tensor(std::mov
 
 Tensor Tensor::random(std::vector<size_t> shape, float lo, float hi) {
 	// One stream per seed epoch, so repeated calls continue it and manual_seed restarts it
+	// Not synchronised for concurrent use (same as v1.0.0)
 	static std::mt19937 gen;
-	static uint64_t epoch = 0;
+	static std::uint64_t epoch = 0;
 	static bool init = false;
 	if (!init || epoch != seed_epoch()) {
 		epoch = seed_epoch();
