@@ -7,6 +7,7 @@
 #include "csv.hpp"
 #include "runner.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -66,20 +67,21 @@ static int fail(const std::string& msg) {
  * Returns int: 0 on success, 2 on invalid usage or environment
  */
 int main(int argc, char** argv) {
-	std::string out, suite = "all", label = "pinned";
+	std::string out, suite = "all", label = "pinned", only;
 	unsigned long runs = 15, warmup = 3, seed = 1;
 
 	for (int i = 1; i < argc; ++i) {
 		const std::string a = argv[i];
 		if (a == "--mnist") return fail("--mnist: not implemented in Phase 0");
 		const bool known = a == "--out" || a == "--suite" || a == "--runs" || a == "--warmup" || a == "--seed" ||
-		                   a == "--label";
+		                   a == "--label" || a == "--workload";
 		if (!known) return fail("unknown flag: " + a);
 		if (i + 1 >= argc) return fail("missing value for " + a);
 		const std::string v = argv[++i];
 		if (a == "--out") out = v;
 		else if (a == "--suite") suite = v;
 		else if (a == "--label") label = v;
+		else if (a == "--workload") only = v;
 		else {
 			unsigned long& dst = a == "--runs" ? runs : a == "--warmup" ? warmup : seed;
 			if (!parse_uint(v, dst)) return fail("invalid value for " + a + ": '" + v + "'");
@@ -88,6 +90,12 @@ int main(int argc, char** argv) {
 	if (out.empty()) return fail("--out <file.csv> is required");
 	if (suite != "workloads" && suite != "matmul" && suite != "all") return fail("--suite must be workloads|matmul|all");
 	if (label != "pinned" && label != "unpinned") return fail("--label must be pinned|unpinned");
+	if (!only.empty()) {
+		auto names = bench::workload_names();
+		names.push_back("infer_nograd_b1");
+		names.push_back("infer_nograd_b256");
+		if (std::find(names.begin(), names.end(), only) == names.end()) return fail("unknown workload: " + only);
+	}
 	if (runs < 1) return fail("--runs must be at least 1");
 
 	unsigned long threads = std::thread::hardware_concurrency();
@@ -112,8 +120,10 @@ int main(int argc, char** argv) {
 		};
 
 		if (suite != "matmul") {
-			for (const auto& n : bench::workload_names()) emit(bench::run_workload(n, s, w, r));
-			for (size_t b : {1, 256}) emit(bench::run_inference(s, b, w, r));
+			for (const auto& n : bench::workload_names())
+				if (only.empty() || only == n) emit(bench::run_workload(n, s, w, r));
+			for (size_t b : {1, 256})
+				if (only.empty() || only == "infer_nograd_b" + std::to_string(b)) emit(bench::run_inference(s, b, w, r));
 		}
 		if (suite != "workloads") {
 			for (size_t n : {8, 16, 32, 64, 128, 256, 512, 1024, 2048}) {
