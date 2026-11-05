@@ -79,7 +79,7 @@ install(TARGETS nn_core EXPORT nn_cppTargets
 	ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/nn DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(NN_BUILD_APPS)
-	install(TARGETS xor_demo train_mnist bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+	install(TARGETS xor_demo train_mnist train_fer2013 bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 set(NN_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/nn_cpp)
