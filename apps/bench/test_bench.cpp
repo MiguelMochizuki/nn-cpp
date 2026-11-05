@@ -8,6 +8,8 @@
 #include "doctest/doctest.h"
 #include "csv.hpp"
 #include "stats.hpp"
+#include "workloads.hpp"
+#include "nn/autograd/ops.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -43,4 +45,66 @@ TEST_CASE("CsvWriter") {
 	ss << in.rdbuf();
 	CHECK(ss.str() == "a,b\n1,2\n3,4\n");
 	std::remove(path.c_str());
+}
+
+/**
+ * Runs steps of training on a workload and returns the first and last loss
+ *
+ * Parameters:
+ * Workload& w: workload to train
+ * int steps: number of optimizer steps
+ *
+ * Returns std::pair<float, float>: loss before the first step and after the last
+ */
+static std::pair<float, float> train_losses(Workload& w, int steps) {
+	float first = 0.0f, last = 0.0f;
+	for (int i = 0; i <= steps; i++) {
+		nn::Value out = w.model->forward(nn::Value::leaf(w.x));
+		nn::Value loss = w.classification ? nn::cross_entropy_loss(out, w.y)
+		                                  : nn::mse_loss(out, nn::Value::leaf(w.y));
+		float l = loss.data().get({0});
+		if (i == 0) first = l;
+		last = l;
+		if (i == steps) break;
+		w.optimizer->zero_grad();
+		loss.backward();
+		w.optimizer->step();
+	}
+	return {first, last};
+}
+
+TEST_CASE("workloads are reproducible per seed") {
+	Workload a = make_workload("cnn_mnist", 7);
+	Workload b = make_workload("cnn_mnist", 7);
+	Workload c = make_workload("cnn_mnist", 8);
+	auto pa = a.model->parameters(), pb = b.model->parameters(), pc = c.model->parameters();
+	REQUIRE(pa.size() == pb.size());
+	bool differs = false;
+	for (size_t i = 0; i < pa.size(); i++) {
+		CHECK(pa[i].data().data() == pb[i].data().data());
+		differs = differs || pa[i].data().data() != pc[i].data().data();
+	}
+	CHECK(differs);
+	CHECK(a.x.data() == b.x.data());
+	CHECK(a.y.data() == b.y.data());
+}
+
+TEST_CASE("unknown workload throws") {
+	CHECK_THROWS_AS(make_workload("nope", 1), std::invalid_argument);
+}
+
+TEST_CASE("workload shapes") {
+	CHECK(make_workload("cnn_mnist", 1).x.shape() == std::vector<size_t>{32, 1, 28, 28});
+	CHECK(make_workload("cnn_large", 1).x.shape() == std::vector<size_t>{64, 3, 64, 64});
+	CHECK(make_workload("mlp_wide", 1).x.shape() == std::vector<size_t>{256, 784});
+	CHECK(workload_names().size() == 5);
+}
+
+TEST_CASE("workloads are learnable") {
+	Workload xor_w = make_workload("xor", 1);
+	auto xl = train_losses(xor_w, 30);
+	CHECK(xl.second < xl.first);
+	Workload wide = make_workload("mlp_wide", 1);
+	auto wl = train_losses(wide, 15);
+	CHECK(wl.second < wl.first);
 }
