@@ -36,6 +36,7 @@ add_library(nn_core STATIC
 	src/optim/scheduler.cpp
 	src/optim/clip.cpp
 	src/data/dataloader.cpp
+	src/data/subset.cpp
 )
 
 target_include_directories(nn_core PUBLIC
