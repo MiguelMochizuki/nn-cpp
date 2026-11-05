@@ -280,11 +280,11 @@ Value relu(const Value& x) {
 	for (float& v : result.data()) v = v > 0.0f ? v : 0.0f;
 	return Value::node(std::move(result), {x}, [x](const Tensor& grad_out) {
 		if (!x.requires_grad()) return;
-		Tensor local_grad(x.data().shape());
-		for (size_t i = 0; i < local_grad.size(); i++) {
-			local_grad.data()[i] = (x.data().data()[i] > 0.0f) ? grad_out.data()[i] : 0.0f;
-		}
-		x.grad() += local_grad;
+		size_t n = grad_out.size();
+		const float* in = x.data().data().data();
+		const float* g = grad_out.data().data();
+		float* dst = x.grad().data().data();
+		for (size_t i = 0; i < n; i++) dst[i] += in[i] > 0.0f ? g[i] : 0.0f;
 	});
 }
 

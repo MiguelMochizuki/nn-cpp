@@ -275,6 +275,20 @@ TEST_CASE("relu gradcheck away from the kink") {
 	CHECK(gradcheck(f, x));
 }
 
+TEST_CASE("relu backward passes the gradient only where the input is positive and accumulates") {
+	for (size_t n : {size_t{1}, size_t{7}, size_t{33}, size_t{257}}) {
+		Tensor v({n});
+		for (size_t i = 0; i < n; i++) v.data()[i] = (i % 3 == 0) ? -1.0f : (i % 3 == 1 ? 0.0f : 2.0f);
+		Value x = Value::leaf(v, true);
+		x.grad().data().assign(n, 5.0f);  // pre-existing gradient must be kept, not overwritten
+		sum(scale(relu(x), 3.0f)).backward();
+		for (size_t i = 0; i < n; i++) {
+			CHECK(relu(x).data().data()[i] == (v.data()[i] > 0.0f ? v.data()[i] : 0.0f));
+			CHECK(x.grad().data()[i] == doctest::Approx(v.data()[i] > 0.0f ? 8.0f : 5.0f));
+		}
+	}
+}
+
 TEST_CASE("sigmoid gradcheck") {
 	auto f = [](Value x) { return sum(sigmoid(x)); };
 	Value x = Value::leaf(Tensor({3}, std::vector<float>{-1.0f, 0.0f, 1.0f}), true);
