@@ -96,6 +96,54 @@ Value mean(const Value& x, int axis, bool keepdim = false);
  */
 Value rsqrt(const Value& x);
 
+/* Public, differentiable elementwise exponential
+ *
+ * Parameters:
+ * Value x: operand
+ *
+ * Returns Value: e^x elementwise (overflows to inf per IEEE); backward multiplies grad_out by e^x
+ */
+Value exp(const Value& x);
+
+/* Public, differentiable elementwise natural logarithm
+ *
+ * Parameters:
+ * Value x: operand; follows IEEE for x <= 0 (-inf at 0, NaN below), nothing is thrown
+ *
+ * Returns Value: ln(x) elementwise; backward multiplies grad_out by 1 / x
+ */
+Value log(const Value& x);
+
+/* Public, differentiable elementwise square root
+ *
+ * Parameters:
+ * Value x: operand; follows IEEE for x < 0 (NaN), nothing is thrown
+ *
+ * Returns Value: sqrt(x) elementwise; backward multiplies grad_out by 0.5 / sqrt(x)
+ */
+Value sqrt(const Value& x);
+
+/* Public, differentiable elementwise division with broadcasting
+ *
+ * Parameters:
+ * Value a: numerator
+ * Value b: denominator; zero follows IEEE (inf or NaN)
+ *
+ * Returns Value: a.data() / b.data(); backward accumulates grad_out / b into a and
+ * -grad_out * a / b^2 into b, each reduced over any broadcast dimensions
+ */
+Value div(const Value& a, const Value& b);
+
+/* Public, differentiable Gaussian error linear unit (tanh approximation)
+ *
+ * Parameters:
+ * Value x: operand
+ *
+ * Returns Value: 0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3))) elementwise; backward
+ * multiplies grad_out by the analytic derivative of that expression
+ */
+Value gelu(const Value& x);
+
 /* Public, differentiable dimension permutation
  *
  * Parameters:

@@ -336,6 +336,73 @@ Value rsqrt(const Value& x) {
 	});
 }
 
+namespace {
+
+/**
+ * Builds a unary elementwise Value from a forward function and a derivative function
+ *
+ * Parameters:
+ * const Value& x: Operand
+ * F fwd: float -> float forward map
+ * D deriv: (x, y) -> dy/dx, given the input and the forward output
+ *
+ * Returns Value: fwd(x) elementwise; backward multiplies grad_out by deriv
+ */
+template <typename F, typename D>
+Value unary_elementwise(const Value& x, F fwd, D deriv) {
+	Tensor result = x.data();
+	float* r = result.data().data();
+	kernels::parallel_range(result.size(), kElementwiseChunk, [r, fwd](size_t lo, size_t hi) {
+		for (size_t i = lo; i < hi; i++) r[i] = fwd(r[i]);
+	});
+	return Value::node(std::move(result), {x}, [x, deriv](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		const float* in = x.data().data().data();
+		const float* g = grad_out.data().data();
+		float* dst = x.grad().data().data();
+		kernels::parallel_range(grad_out.size(), kElementwiseChunk, [=](size_t lo, size_t hi) {
+			for (size_t i = lo; i < hi; i++) dst[i] += g[i] * deriv(in[i]);
+		});
+	});
+}
+
+}  // namespace
+
+Value exp(const Value& x) {
+	return unary_elementwise(x, [](float v) { return std::exp(v); }, [](float v) { return std::exp(v); });
+}
+
+Value log(const Value& x) {
+	return unary_elementwise(x, [](float v) { return std::log(v); }, [](float v) { return 1.0f / v; });
+}
+
+Value sqrt(const Value& x) {
+	return unary_elementwise(x, [](float v) { return std::sqrt(v); }, [](float v) { return 0.5f / std::sqrt(v); });
+}
+
+Value div(const Value& a, const Value& b) {
+	Tensor result = div(a.data(), b.data());
+	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
+		if (a.requires_grad()) accumulate_grad(a.grad(), div(grad_out, b.data()));
+		if (b.requires_grad()) {
+			Tensor q = div(mul(grad_out, a.data()), mul(b.data(), b.data()));
+			accumulate_grad(b.grad(), q, true);
+		}
+	});
+}
+
+Value gelu(const Value& x) {
+	const float k = 0.7978845608f;  // sqrt(2/pi)
+	const float c = 0.044715f;
+	return unary_elementwise(
+		x,
+		[k, c](float v) { return 0.5f * v * (1.0f + std::tanh(k * (v + c * v * v * v))); },
+		[k, c](float v) {
+			float t = std::tanh(k * (v + c * v * v * v));
+			return 0.5f * (1.0f + t) + 0.5f * v * (1.0f - t * t) * k * (1.0f + 3.0f * c * v * v);
+		});
+}
+
 Value transpose(const Value& x, std::vector<size_t> perm) {
 	Tensor result = x.data().transpose(perm);
 	std::vector<size_t> inverse(perm.size());

@@ -1152,3 +1152,39 @@ TEST_CASE("axis reductions over a zero-length axis throw") {
 	CHECK_THROWS_AS(mean(x, 0), TensorShapeError);
 	CHECK_THROWS_AS(sum(x, 0), TensorShapeError);
 }
+
+TEST_CASE("exp log sqrt div gelu forward values") {
+	auto at = [](const Value& v) { return v.data().data()[0]; };
+	CHECK(at(exp(Value::leaf(Tensor({1}, 0.0f), false))) == doctest::Approx(1.0f));
+	CHECK(at(log(Value::leaf(Tensor({1}, 2.7182818f), false))) == doctest::Approx(1.0f));
+	CHECK(at(sqrt(Value::leaf(Tensor({1}, 4.0f), false))) == doctest::Approx(2.0f));
+	Value q = div(Value::leaf(Tensor({2}, std::vector<float>{2, 3}), false), Value::leaf(Tensor({1}, 2.0f), false));
+	CHECK(q.data().data()[0] == doctest::Approx(1.0f));
+	CHECK(q.data().data()[1] == doctest::Approx(1.5f));
+	CHECK(at(gelu(Value::leaf(Tensor({1}, 0.0f), false))) == doctest::Approx(0.0f));
+	CHECK(at(gelu(Value::leaf(Tensor({1}, 1.0f), false))) == doctest::Approx(0.841192f).epsilon(1e-4));
+	CHECK(at(gelu(Value::leaf(Tensor({1}, -1.0f), false))) == doctest::Approx(-0.158808f).epsilon(1e-4));
+}
+
+TEST_CASE("exp log sqrt gelu gradcheck") {
+	for (auto shape : {std::vector<size_t>{1}, {7}, {3, 5}}) {
+		Value x = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
+		CHECK(gradcheck([](Value v) { return sum(exp(v)); }, x));
+		CHECK(gradcheck([](Value v) { return sum(log(v)); }, x));
+		CHECK(gradcheck([](Value v) { return sum(sqrt(v)); }, x));
+		CHECK(gradcheck([](Value v) { return sum(gelu(v)); }, x));
+	}
+}
+
+TEST_CASE("div gradcheck both operands including broadcast") {
+	for (auto shape : {std::vector<size_t>{1}, {7}, {3, 5}}) {
+		Value a = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
+		Value b = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
+		CHECK(gradcheck([b](Value v) { return sum(div(v, b)); }, a));
+		CHECK(gradcheck([a](Value v) { return sum(div(a, v)); }, b));
+	}
+	Value a = Value::leaf(Tensor::random({3, 5}, 0.5f, 2.0f), true);
+	Value b = Value::leaf(Tensor::random({5}, 0.5f, 2.0f), true);
+	CHECK(gradcheck([b](Value v) { return sum(div(v, b)); }, a));
+	CHECK(gradcheck([a](Value v) { return sum(div(a, v)); }, b));
+}
