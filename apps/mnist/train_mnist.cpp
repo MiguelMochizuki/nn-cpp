@@ -14,10 +14,12 @@
 #include "nn/nn/loss.hpp"
 #include "nn/optim/sgd.hpp"
 #include "nn/data/dataloader.hpp"
+#include "nn/metrics.hpp"
 
-#include <cstdio>
 #include <cmath>
+#include <cstdio>
 #include <memory>
+#include <vector>
 #include <string>
 
 using namespace nn;
@@ -32,6 +34,7 @@ using namespace nn;
  * Returns int: 0 on success, 1 on bad usage
  */
 int main(int argc, char** argv) {
+	std::setvbuf(stdout, nullptr, _IOLBF, 0);  // progress lines appear as they are printed, even into a file
 	if (argc < 2) {
 		std::fprintf(stderr, "usage: %s <mnist_dir>\n", argv[0]);
 		std::fprintf(stderr, "  mnist_dir must contain train-images-idx3-ubyte, train-labels-idx1-ubyte,\n");
@@ -80,6 +83,7 @@ int main(int argc, char** argv) {
 	DataLoader test_loader(test_set, 32, false);
 	size_t correct = 0;
 	size_t total = 0;
+	std::vector<size_t> y_true, y_pred;
 	for (size_t b = 0; b < test_loader.num_batches(); b++) {
 		auto [x_batch, y_batch] = test_loader.get_batch(b);
 		Value x_norm = scale(x_batch, 1.0f / 255.0f);
@@ -98,6 +102,8 @@ int main(int argc, char** argv) {
 				}
 			}
 			size_t true_class = static_cast<size_t>(std::round(y_batch.get({i})));
+			y_true.push_back(true_class);
+			y_pred.push_back(best_class);
 			if (best_class == true_class) correct++;
 			total++;
 		}
@@ -105,5 +111,6 @@ int main(int argc, char** argv) {
 
 	std::printf("test accuracy: %.2f%% (%zu/%zu)\n",
 	            100.0f * static_cast<float>(correct) / static_cast<float>(total), correct, total);
+	std::printf("\n%s", classification_report(y_true, y_pred, 10, {}, 4).c_str());
 	return 0;
 }

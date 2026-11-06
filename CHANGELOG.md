@@ -8,7 +8,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Added
 
 - `nn/metrics.hpp`: `confusion_matrix`, `accuracy_score`, `precision_recall_f1`, `precision_score`, `recall_score`, `f1_score` (micro, macro and weighted averages, `zero_division`), `classification_report` laid out like scikit-learn's, and the helpers `argmax_rows` and `to_labels`.
-- `train_fer2013` prints macro-F1 each epoch and a per-class report after the last one.
+- `DataLoader` constructor with per-sample weights (draws with replacement, like PyTorch's `WeightedRandomSampler`, portable across platforms), `balanced_sample_weights`, and `Fer2013Dataset::labels()`.
+- `train_fer2013` and `train_mnist` print a classification report; `train_fer2013` also keeps the best epoch by validation macro-F1 and scores it on the PrivateTest rows. All three apps flush their output line by line.
+
+### Changed
+
+- `train_fer2013` defaults to 100 epochs and a larger network (32-64-128-256 channels with dropout and a dense head), AdamW weight decay 5e-2, label smoothing 0.1 and class balancing by sampling.
 
 ## [1.1.0] - 2026-11-05
 

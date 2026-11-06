@@ -62,13 +62,14 @@ This is a tested program (built against an installed prefix with `find_package(n
 
 ## Training on FER-2013
 
-`apps/fer2013/train_fer2013.cpp` trains a Conv-BatchNorm-ReLU network with global average pooling and dropout on the FER-2013 facial-expression CSV (columns `emotion,pixels,Usage`; `Training` rows train, `PublicTest` rows validate). FER-2013 is not part of this repository and is not downloaded: obtain `fer2013.csv` separately, for example from its Kaggle challenge page.
+`apps/fer2013/train_fer2013.cpp` trains a four-stage Conv-BatchNorm-ReLU network (32 to 256 channels, feature dropout, global average pooling, a dense head) on the FER-2013 facial-expression CSV (columns `emotion,pixels,Usage`). `Training` rows train, `PublicTest` rows pick the best epoch by macro-F1, and `PrivateTest` rows give the final classification report and confusion matrix. FER-2013 is not part of this repository and is not downloaded: obtain `fer2013.csv` separately, for example from [Kaggle](https://www.kaggle.com/datasets/deadskull7/fer2013).
 
 ```bash
 ./build/apps/train_fer2013 <fer2013.csv> [--epochs N] [--batch N] [--lr X] [--seed N] [--out ckpt]
+                                         [--balance sampler|loss|none] [--smoothing X]
 ```
 
-Defaults are `--epochs 20 --batch 64 --lr 1e-3 --seed 1 --out fer2013.ckpt`. The `cnn_fer` row of `apps/bench` times one step of the same network shape.
+Defaults are `--epochs 100 --batch 64 --lr 1e-3 --seed 1 --balance sampler --smoothing 0.1 --out fer2013.ckpt`. `--balance sampler` draws the classes equally often with a weighted `DataLoader` (`balanced_sample_weights`); `loss` weights the loss by class instead. One epoch takes about 3.5 minutes on 8 threads of an i5-12450HX. The `cnn_fer` row of `apps/bench` times one step of a smaller network of the same kind.
 
 ## Saving and resuming
 
