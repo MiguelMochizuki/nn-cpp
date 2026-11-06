@@ -1,7 +1,7 @@
 /**
  * transform.cpp
  * Author: Miguel Mochizuki Silva
- * Description: Sample transforms (normalise, flip, shift, crop, affine, ten-crop, compose) and a Dataset wrapper that applies them
+ * Description: Sample transforms (normalise, flip, shift, crop, affine, erasing, ten-crop, compose) and a Dataset wrapper that applies them
  */
 
 #include "nn/data/transform.hpp"
@@ -179,6 +179,48 @@ Tensor RandomAffine::operator()(const Tensor& sample) {
 				}
 			}
 		}
+	}
+	return out;
+}
+
+RandomErasing::RandomErasing(float p, float min_area, float max_area, float min_ratio, float max_ratio, float value)
+	: p_(p), min_area_(min_area), max_area_(max_area), min_ratio_(min_ratio), max_ratio_(max_ratio), value_(value),
+	  rng_(derive_generator("transform.erasing")) {
+	if (!(p >= 0.0f && p <= 1.0f)) throw std::invalid_argument("RandomErasing: p must be in [0, 1]");
+	if (!(min_area > 0.0f && min_area <= max_area && max_area <= 1.0f))
+		throw std::invalid_argument("RandomErasing: need 0 < min_area <= max_area <= 1");
+	if (!(min_ratio > 0.0f && min_ratio <= max_ratio && std::isfinite(max_ratio)))
+		throw std::invalid_argument("RandomErasing: need 0 < min_ratio <= max_ratio, finite");
+}
+
+Tensor RandomErasing::operator()(const Tensor& sample) {
+	if (sample.shape().size() != 3) {
+		throw TensorShapeError();
+	}
+	constexpr int kAttempts = 10;
+	// draw everything up front: 1 decision + 4 numbers per attempt, whatever p is and whether anything fits
+	bool erase = unit(rng_) < p_;
+	double u[kAttempts][4];
+	for (auto& attempt : u)
+		for (double& v : attempt) v = unit(rng_);
+	Tensor out = sample;
+	if (!erase) {
+		return out;
+	}
+	size_t C = sample.shape()[0], H = sample.shape()[1], W = sample.shape()[2];
+	double log_lo = std::log(static_cast<double>(min_ratio_)), log_hi = std::log(static_cast<double>(max_ratio_));
+	for (const auto& attempt : u) {
+		double area = (static_cast<double>(min_area_) + attempt[0] * (static_cast<double>(max_area_) - min_area_)) * static_cast<double>(H) * static_cast<double>(W);
+		double ratio = std::exp(log_lo + attempt[1] * (log_hi - log_lo));
+		double hd = std::round(std::sqrt(area * ratio)), wd = std::round(std::sqrt(area / ratio));
+		if (!(hd >= 1.0 && hd <= static_cast<double>(H) && wd >= 1.0 && wd <= static_cast<double>(W))) continue;
+		size_t h = static_cast<size_t>(hd), w = static_cast<size_t>(wd);
+		size_t y0 = std::min(static_cast<size_t>(attempt[2] * static_cast<double>(H - h + 1)), H - h);
+		size_t x0 = std::min(static_cast<size_t>(attempt[3] * static_cast<double>(W - w + 1)), W - w);
+		for (size_t c = 0; c < C; c++)
+			for (size_t y = y0; y < y0 + h; y++)
+				for (size_t x = x0; x < x0 + w; x++) out.data()[(c * H + y) * W + x] = value_;
+		break;
 	}
 	return out;
 }

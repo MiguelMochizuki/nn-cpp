@@ -218,6 +218,56 @@ private:
 	std::mt19937 rng_;
 };
 
+/*
+ * With probability p, sets one random rectangle of a {C,H,W} sample to a constant in every
+ * channel. Up to 10 placement attempts each draw a target area fraction uniform in
+ * [min_area, max_area] and an aspect ratio h/w log-uniform in [min_ratio, max_ratio], giving
+ * h = round(sqrt(area * ratio)) and w = round(sqrt(area / ratio)) with area = fraction * H * W;
+ * the first attempt with 1 <= h <= H and 1 <= w <= W is placed uniformly inside the image. If
+ * none fits the sample is returned unchanged. Every call draws the same 41 numbers (the
+ * decision plus four per attempt, all drawn up front) whatever p is and whether or not an
+ * attempt fits, so the stream advances identically. Owns derive_generator("transform.erasing").
+ *
+ * Attributes:
+ * float p_, min_area_, max_area_, min_ratio_, max_ratio_, value_: parameters as constructed
+ * mt19937 rng_: parameter stream
+ */
+class RandomErasing : public Transform {
+public:
+	/* Public, build an eraser
+	 *
+	 * Parameters:
+	 * float p: probability of erasing, in [0, 1]
+	 * float min_area: smallest erased fraction of the image, > 0
+	 * float max_area: largest erased fraction, in [min_area, 1]
+	 * float min_ratio: smallest aspect ratio h/w, > 0
+	 * float max_ratio: largest aspect ratio, >= min_ratio
+	 * float value: fill value
+	 *
+	 * Returns RandomErasing: none (constructor); throws std::invalid_argument for an out-of-range argument
+	 */
+	explicit RandomErasing(float p = 0.5f, float min_area = 0.02f, float max_area = 0.33f, float min_ratio = 0.3f,
+	                       float max_ratio = 3.3f, float value = 0.0f);
+
+	/* Public, erase a rectangle of one sample
+	 *
+	 * Parameters:
+	 * const Tensor& sample: shape {C, H, W}
+	 *
+	 * Returns Tensor: same shape; throws TensorShapeError if the rank is not 3
+	 */
+	Tensor operator()(const Tensor& sample) override;
+
+private:
+	float p_;
+	float min_area_;
+	float max_area_;
+	float min_ratio_;
+	float max_ratio_;
+	float value_;
+	std::mt19937 rng_;
+};
+
 /**
  * Ten test-time views of a {C,H,W} sample: the top-left, top-right, bottom-left, bottom-right
  * and centre crops, then the horizontal mirror of each in the same order. The centre offset is

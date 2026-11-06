@@ -622,3 +622,70 @@ TEST_CASE("ten_crop_batch stacks ten_crop per sample") {
 	}
 	CHECK_THROWS_AS(ten_crop_batch(batch, 6), std::invalid_argument);
 }
+
+TEST_CASE("RandomErasing p = 0 leaves the sample unchanged") {
+	Tensor x = index_image({1, 33, 33});
+	RandomErasing erase(0.0f);
+	for (int i = 0; i < 20; i++) CHECK(erase(x).data() == x.data());
+}
+
+TEST_CASE("RandomErasing erases one axis-aligned rectangle of bounded area in every channel") {
+	Tensor ones({1, 33, 33}, 1.0f);
+	manual_seed(8);
+	RandomErasing erase(1.0f, 0.25f, 0.25f, 0.3f, 3.3f, -1.0f);
+	int erased_draws = 0;
+	for (int i = 0; i < 200; i++) {
+		Tensor y = erase(ones);
+		size_t count = 0, y0 = 33, y1 = 0, x0 = 33, x1 = 0;
+		for (size_t r = 0; r < 33; r++)
+			for (size_t q = 0; q < 33; q++)
+				if (y.data()[r * 33 + q] == -1.0f) {
+					count++;
+					y0 = std::min(y0, r);
+					y1 = std::max(y1, r);
+					x0 = std::min(x0, q);
+					x1 = std::max(x1, q);
+				}
+		CHECK(static_cast<double>(count) <= 0.25 * 33 * 33 + 40);
+		if (count == 0) continue;
+		erased_draws++;
+		CHECK(count == (y1 - y0 + 1) * (x1 - x0 + 1));  // the bounding box is fully erased
+	}
+	CHECK(erased_draws > 100);
+
+	Tensor rgb({3, 7, 7}, 1.0f);
+	RandomErasing all(1.0f, 0.3f, 0.3f, 1.0f, 1.0f, 5.0f);
+	Tensor z = all(rgb);
+	size_t fives = 0;
+	for (size_t i = 0; i < 49; i++) {
+		CHECK(z.data()[49 + i] == z.data()[i]);
+		CHECK(z.data()[98 + i] == z.data()[i]);
+		if (z.data()[i] == 5.0f) fives++;
+	}
+	CHECK(fives == 16);  // area 14.7 -> 4 x 4
+}
+
+TEST_CASE("RandomErasing handles tiny images, is repeatable and validates arguments") {
+	manual_seed(9);
+	RandomErasing erase(1.0f, 0.02f, 1.0f, 0.3f, 3.3f, -1.0f);
+	for (int i = 0; i < 100; i++) {
+		CHECK(erase(Tensor({1, 1, 1}, 1.0f)).size() == 1);
+		CHECK(erase(Tensor({1, 7, 7}, 1.0f)).size() == 49);
+	}
+	Tensor big = index_image({3, 33, 33});
+	manual_seed(10);
+	Tensor a = RandomErasing(0.7f)(big);
+	manual_seed(10);
+	Tensor b = RandomErasing(0.7f)(big);
+	CHECK(a.data() == b.data());
+	CHECK_THROWS_AS(RandomErasing(-0.1f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(1.1f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.0f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.4f, 0.3f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 1.5f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 0.0f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 2.0f, 1.0f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(std::nanf("")), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, std::nanf("")), std::invalid_argument);
+	CHECK_THROWS_AS(erase(Tensor({4, 5}, 0.0f)), TensorShapeError);
+}
