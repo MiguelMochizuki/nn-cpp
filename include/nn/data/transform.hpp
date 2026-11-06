@@ -1,7 +1,7 @@
 /**
  * transform.hpp
  * Author: Miguel Mochizuki Silva
- * Description: Sample transforms (normalise, flip, shift, compose) and a Dataset wrapper that applies them
+ * Description: Sample transforms (normalise, flip, shift, crop, affine, ten-crop, compose) and a Dataset wrapper that applies them
  */
 
 #pragma once
@@ -141,6 +141,108 @@ private:
 	size_t max_shift_;
 	std::mt19937 rng_;
 };
+
+/*
+ * Crops a {C,H,W} sample to a square at a uniformly random offset. Owns
+ * derive_generator("transform.crop").
+ *
+ * Attributes:
+ * size_t size_: side of the crop in pixels
+ * mt19937 rng_: offset stream
+ */
+class RandomCrop : public Transform {
+public:
+	/* Public, build a cropper
+	 *
+	 * Parameters:
+	 * size_t size: side of the square crop
+	 *
+	 * Returns RandomCrop: none (constructor)
+	 */
+	explicit RandomCrop(size_t size);
+
+	/* Public, crop one sample
+	 *
+	 * Parameters:
+	 * const Tensor& sample: shape {C, H, W}
+	 *
+	 * Returns Tensor: shape {C, size, size}; throws TensorShapeError if the rank is not 3,
+	 * std::invalid_argument if size exceeds H or W
+	 */
+	Tensor operator()(const Tensor& sample) override;
+
+private:
+	size_t size_;
+	std::mt19937 rng_;
+};
+
+/*
+ * With probability p each, independently: rotates about the image centre, translates by a
+ * fraction of the height and width, and scales about the centre. The drawn components are
+ * composed into one inverse mapping and resampled bilinearly with zeros outside the source.
+ * If every component is the identity the sample is returned as an exact copy. Owns
+ * derive_generator("transform.affine").
+ *
+ * Attributes:
+ * float max_degrees_, max_shift_, max_scale_, p_: ranges and per-component probability
+ * mt19937 rng_: parameter stream
+ */
+class RandomAffine : public Transform {
+public:
+	/* Public, build an affine augmenter
+	 *
+	 * Parameters:
+	 * float max_degrees: rotation drawn uniformly from [-max_degrees, max_degrees], >= 0
+	 * float max_shift: translation fraction drawn from [-max_shift, max_shift], in [0, 1]
+	 * float max_scale: scale drawn from [1 - max_scale, 1 + max_scale], in [0, 1)
+	 * float p: probability of applying each component, in [0, 1]
+	 *
+	 * Returns RandomAffine: none (constructor); throws std::invalid_argument for an out-of-range argument
+	 */
+	RandomAffine(float max_degrees, float max_shift, float max_scale, float p = 0.5f);
+
+	/* Public, transform one sample
+	 *
+	 * Parameters:
+	 * const Tensor& sample: shape {C, H, W}
+	 *
+	 * Returns Tensor: same shape; throws TensorShapeError if the rank is not 3
+	 */
+	Tensor operator()(const Tensor& sample) override;
+
+private:
+	float max_degrees_;
+	float max_shift_;
+	float max_scale_;
+	float p_;
+	std::mt19937 rng_;
+};
+
+/**
+ * Ten test-time views of a {C,H,W} sample: the top-left, top-right, bottom-left, bottom-right
+ * and centre crops, then the horizontal mirror of each in the same order. The centre offset is
+ * floor((H - size) / 2) and likewise for W.
+ *
+ * Parameters:
+ * const Tensor& sample: shape {C, H, W}
+ * size_t size: side of each square crop
+ *
+ * Returns vector<Tensor>: ten tensors {C, size, size}; throws TensorShapeError if the rank is
+ * not 3, std::invalid_argument if size exceeds H or W
+ */
+std::vector<Tensor> ten_crop(const Tensor& sample, size_t size);
+
+/**
+ * ten_crop applied to every sample of a batch; view k stacks view k of each sample.
+ *
+ * Parameters:
+ * const Tensor& batch: shape {N, C, H, W}
+ * size_t size: side of each square crop
+ *
+ * Returns vector<Tensor>: ten tensors {N, C, size, size}; throws TensorShapeError if the rank
+ * is not 4, std::invalid_argument if size exceeds H or W
+ */
+std::vector<Tensor> ten_crop_batch(const Tensor& batch, size_t size);
 
 /*
  * View of a Dataset whose inputs go through a transform; targets are untouched.

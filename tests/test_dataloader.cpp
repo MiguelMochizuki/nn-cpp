@@ -13,6 +13,7 @@
 #include "nn/random.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -483,4 +484,141 @@ TEST_CASE("balanced_sample_weights equalise the classes") {
 	CHECK(per_class[2] == doctest::Approx(1.0));
 	CHECK_THROWS_AS(balanced_sample_weights({0, 4}, 4), std::invalid_argument);
 	CHECK(balanced_sample_weights({}, 3).empty());
+}
+
+namespace {
+
+Tensor index_image(std::vector<size_t> shape) {
+	Tensor t(shape, 0.0f);
+	for (size_t i = 0; i < t.size(); i++) t.data()[i] = static_cast<float>(i);
+	return t;
+}
+
+bool all_finite(const Tensor& t) {
+	for (float v : t.data())
+		if (!std::isfinite(v)) return false;
+	return true;
+}
+
+}  // namespace
+
+TEST_CASE("RandomCrop returns a contiguous window and validates the size") {
+	Tensor same = index_image({1, 7, 7});
+	CHECK(RandomCrop(7)(same).data() == same.data());
+	Tensor big = index_image({3, 33, 33});
+	manual_seed(4);
+	RandomCrop crop(7);
+	bool moved = false;
+	for (int i = 0; i < 20; i++) {
+		Tensor y = crop(big);
+		REQUIRE(y.shape() == std::vector<size_t>({3, 7, 7}));
+		// value = (c*33 + r)*33 + q, so the first element fixes the offset
+		size_t first = static_cast<size_t>(y.data()[0]);
+		size_t oy = (first / 33) % 33, ox = first % 33;
+		CHECK(oy + 7 <= 33);
+		CHECK(ox + 7 <= 33);
+		if (oy != 0 || ox != 0) moved = true;
+		for (size_t c = 0; c < 3; c++)
+			for (size_t r = 0; r < 7; r++)
+				for (size_t q = 0; q < 7; q++) CHECK(y.data()[(c * 7 + r) * 7 + q] == big.data()[(c * 33 + oy + r) * 33 + ox + q]);
+	}
+	CHECK(moved);
+	CHECK_THROWS_AS(RandomCrop(8)(same), std::invalid_argument);
+	CHECK_THROWS_AS(RandomCrop(3)(Tensor({5, 5}, 0.0f)), TensorShapeError);
+	manual_seed(5);
+	Tensor a = RandomCrop(7)(big);
+	manual_seed(5);
+	Tensor b = RandomCrop(7)(big);
+	CHECK(a.data() == b.data());
+}
+
+TEST_CASE("RandomAffine is the identity for zero ranges or p = 0") {
+	for (auto shape : {std::vector<size_t>{1, 7, 7}, {3, 33, 33}, {1, 1, 1}}) {
+		Tensor x = index_image(shape);
+		CHECK(RandomAffine(0, 0, 0, 1.0f)(x).data() == x.data());
+		CHECK(RandomAffine(30, 0.5f, 0.5f, 0.0f)(x).data() == x.data());
+	}
+}
+
+TEST_CASE("RandomAffine translates, rotates and scales with bilinear zero-fill") {
+	Tensor dot({1, 9, 9}, 0.0f);
+	dot.data()[4 * 9 + 4] = 1.0f;
+	manual_seed(2);
+	RandomAffine shift(0, 0.5f, 0, 1.0f);
+	for (int i = 0; i < 20; i++) {
+		Tensor y = shift(dot);
+		int nonzero = 0;
+		float mass = 0.0f;
+		for (float v : y.data()) {
+			if (v != 0.0f) nonzero++;
+			mass += v;
+			CHECK(v >= 0.0f);
+		}
+		CHECK(nonzero <= 4);
+		CHECK(mass <= 1.0f + 1e-5f);
+	}
+	Tensor ones({1, 33, 33}, 1.0f);
+	RandomAffine rot(10, 0, 0, 1.0f);
+	manual_seed(3);
+	for (int i = 0; i < 10; i++) {
+		Tensor y = rot(ones);
+		CHECK(y.data()[16 * 33 + 16] == doctest::Approx(1.0f));
+		for (float v : y.data()) {
+			CHECK(v >= 0.0f);
+			CHECK(v <= 1.0f + 1e-5f);
+		}
+	}
+	// extreme settings (large shift, shrink) keep values finite, tiny image included
+	RandomAffine wild(180, 1.0f, 0.9f, 1.0f);
+	for (int i = 0; i < 20; i++) {
+		CHECK(all_finite(wild(ones)));
+		CHECK(all_finite(wild(Tensor({1, 1, 1}, 1.0f))));
+	}
+	manual_seed(6);
+	Tensor a = RandomAffine(15, 0.1f, 0.1f)(ones);
+	manual_seed(6);
+	Tensor b = RandomAffine(15, 0.1f, 0.1f)(ones);
+	CHECK(a.data() == b.data());
+	CHECK_THROWS_AS(RandomAffine(-1, 0, 0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(0, 1.5f, 0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(0, 0, 1.0f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(0, 0, 0, 2.0f), std::invalid_argument);
+	CHECK_THROWS_AS(shift(Tensor({4, 5}, 0.0f)), TensorShapeError);
+}
+
+TEST_CASE("ten_crop returns the four corners and centre then their mirrors") {
+	Tensor x = index_image({1, 5, 5});
+	auto crops = ten_crop(x, 3);
+	REQUIRE(crops.size() == 10);
+	auto window = [&](size_t oy, size_t ox, bool mirror) {
+		std::vector<float> v;
+		for (size_t r = 0; r < 3; r++)
+			for (size_t q = 0; q < 3; q++) v.push_back(x.data()[(oy + r) * 5 + ox + (mirror ? 2 - q : q)]);
+		return v;
+	};
+	size_t offs[5][2] = {{0, 0}, {0, 2}, {2, 0}, {2, 2}, {1, 1}};
+	for (size_t i = 0; i < 5; i++) {
+		CHECK(crops[i].shape() == std::vector<size_t>({1, 3, 3}));
+		CHECK(crops[i].data() == window(offs[i][0], offs[i][1], false));
+		CHECK(crops[i + 5].data() == window(offs[i][0], offs[i][1], true));
+	}
+	CHECK(crops[0].data() == std::vector<float>({0, 1, 2, 5, 6, 7, 10, 11, 12}));
+	CHECK(crops[4].data() == std::vector<float>({6, 7, 8, 11, 12, 13, 16, 17, 18}));
+	CHECK_THROWS_AS(ten_crop(x, 6), std::invalid_argument);
+	CHECK_THROWS_AS(ten_crop(Tensor({5, 5}, 0.0f), 3), TensorShapeError);
+}
+
+TEST_CASE("ten_crop_batch stacks ten_crop per sample") {
+	Tensor batch = index_image({2, 1, 5, 5});
+	auto views = ten_crop_batch(batch, 3);
+	REQUIRE(views.size() == 10);
+	for (size_t n = 0; n < 2; n++) {
+		Tensor sample({1, 5, 5}, std::vector<float>(batch.data().begin() + n * 25, batch.data().begin() + (n + 1) * 25));
+		auto expect = ten_crop(sample, 3);
+		for (size_t v = 0; v < 10; v++) {
+			CHECK(views[v].shape() == std::vector<size_t>({2, 1, 3, 3}));
+			CHECK(std::vector<float>(views[v].data().begin() + n * 9, views[v].data().begin() + (n + 1) * 9) == expect[v].data());
+		}
+	}
+	CHECK_THROWS_AS(ten_crop_batch(batch, 6), std::invalid_argument);
 }

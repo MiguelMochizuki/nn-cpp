@@ -51,7 +51,7 @@ On real MNIST (3 epochs, 8 threads) `train_mnist` reaches 98.58% test accuracy i
 | **Layers** | `Linear`, `Conv2d` (stride, padding, dilation, groups), `MaxPool2d`, `AvgPool2d`, `GlobalAvgPool2d`, `BatchNorm1d/2d`, `Dropout`, `Flatten`, `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `Sequential` |
 | **Losses** | `cross_entropy_loss` (class weights, label smoothing), `mse_loss` |
 | **Optimization** | `SGD` (momentum), `Adam`, `AdamW`, `StepLR`, `CosineAnnealingLR`, `LinearWarmup`, `clip_grad_norm`, `clip_grad_value` |
-| **Data** | `Dataset`, `DataLoader`, `TensorDataset`, `random_split`, `Normalize`, `RandomHorizontalFlip`, `RandomShift`, FER-2013 CSV loader |
+| **Data** | `Dataset`, `DataLoader`, `TensorDataset`, `random_split`, `Normalize`, `RandomHorizontalFlip`, `RandomShift`, `RandomCrop`, `RandomAffine`, `ten_crop`, FER-2013 CSV loader |
 | **Reproducibility** | `manual_seed`, an independent stream per component, portable shuffling |
 | **Persistence** | `save_checkpoint` / `load_checkpoint`: weights, buffers and optimizer state, validated before anything is modified |
 
