@@ -1188,3 +1188,81 @@ TEST_CASE("div gradcheck both operands including broadcast") {
 	CHECK(gradcheck([b](Value v) { return sum(div(v, b)); }, a));
 	CHECK(gradcheck([a](Value v) { return sum(div(a, v)); }, b));
 }
+
+TEST_CASE("masked_fill forward and gradient") {
+	Value x = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6}), true);
+	Tensor mask({1, 3}, std::vector<float>{0, 1, 0});
+	Value y = masked_fill(x, mask, -1e9f);
+	const std::vector<float>& d = y.data().data();
+	CHECK(d[0] == 1.0f);
+	CHECK(d[1] == -1e9f);
+	CHECK(d[2] == 3.0f);
+	CHECK(d[4] == -1e9f);
+	sum(y).backward();
+	const std::vector<float>& g = x.grad().data();
+	CHECK(g == std::vector<float>{1, 0, 1, 1, 0, 1});
+	CHECK_THROWS_AS(masked_fill(x, Tensor({4}, 1.0f), 0.0f), TensorShapeError);
+	CHECK_THROWS_AS(masked_fill(x, Tensor({3, 2, 3}, 1.0f), 0.0f), TensorShapeError);
+}
+
+TEST_CASE("slice concat split forward and errors") {
+	Value x = Value::leaf(Tensor::random({2, 6}, -1.0f, 1.0f), false);
+	Value s = slice(x, 1, 2, 5);
+	CHECK(s.data().shape() == std::vector<size_t>{2, 3});
+	CHECK(s.data().data()[0] == x.data().data()[2]);
+	CHECK(s.data().data()[3] == x.data().data()[8]);
+	Value r = slice(x, -2, 1, 2);
+	CHECK(r.data().shape() == std::vector<size_t>{1, 6});
+	CHECK(r.data().data()[0] == x.data().data()[6]);
+	CHECK_THROWS_AS(slice(x, 1, 3, 3), TensorShapeError);
+	CHECK_THROWS_AS(slice(x, 1, 0, 7), TensorShapeError);
+	CHECK_THROWS_AS(slice(x, 2, 0, 1), TensorIndexError);
+
+	Value a = Value::leaf(Tensor::random({2, 3}, -1.0f, 1.0f), false);
+	Value b = Value::leaf(Tensor::random({2, 4}, -1.0f, 1.0f), false);
+	Value c = concat({a, b}, 1);
+	CHECK(c.data().shape() == std::vector<size_t>{2, 7});
+	Value parts = concat({a, b}, 1);
+	std::vector<Value> back = {slice(parts, 1, 0, 3), slice(parts, 1, 3, 7)};
+	CHECK(back[0].data().data() == a.data().data());
+	CHECK(back[1].data().data() == b.data().data());
+	std::vector<Value> halves = split(c, 0, 2);
+	CHECK(halves.size() == 2);
+	CHECK(halves[1].data().data()[0] == c.data().data()[7]);
+	CHECK_THROWS_AS(split(c, 1, 2), TensorShapeError);
+	CHECK_THROWS_AS(split(c, 1, 0), TensorShapeError);
+	CHECK_THROWS_AS(concat({}, 0), TensorShapeError);
+	CHECK_THROWS_AS(concat({a, b}, 0), TensorShapeError);
+}
+
+TEST_CASE("masked_fill slice concat split gradcheck") {
+	for (size_t n : {size_t(1), size_t(7), size_t(33)}) {
+		for (int ax : {0, 1, -1}) {
+			std::vector<size_t> shape = {3, n};
+			if (ax == 0) shape = {n, 3};
+			Value x = Value::leaf(Tensor::random(shape, -1.0f, 1.0f), true);
+			size_t ai = ax == -1 ? 1 : static_cast<size_t>(ax);
+			Tensor w1 = Tensor::random(shape, 0.5f, 2.0f);
+			size_t a = shape[ai];
+			std::vector<size_t> ws = shape;
+			ws[ai] = a > 1 ? a - 1 : 1;
+			Tensor w2 = Tensor::random(ws, 0.5f, 2.0f);
+			CHECK(gradcheck([&](Value v) { return sum(mul(masked_fill(v, Tensor(std::vector<size_t>{shape[1]}, std::vector<float>(shape[1], 0.0f)), 0.0f), Value::leaf(w1, false))); }, x));
+			if (a > 1) CHECK(gradcheck([&](Value v) { return sum(mul(slice(v, ax, 1, a), Value::leaf(w2, false))); }, x));
+			else CHECK(gradcheck([&](Value v) { return sum(mul(slice(v, ax, 0, 1), Value::leaf(w2, false))); }, x));
+			CHECK(gradcheck([&](Value v) { return sum(mul(concat({v, v}, ax), Value::leaf(concat({Value::leaf(w1, false), Value::leaf(w1, false)}, ax).data(), false))); }, x));
+		}
+	}
+	// masked_fill with a real mask, weighted loss
+	Value x = Value::leaf(Tensor::random({4, 7}, -1.0f, 1.0f), true);
+	Tensor mask({1, 7}, std::vector<float>{0, 1, 0, 0, 1, 0, 1});
+	Tensor w = Tensor::random({4, 7}, 0.5f, 2.0f);
+	CHECK(gradcheck([&](Value v) { return sum(mul(masked_fill(v, mask, 3.0f), Value::leaf(w, false))); }, x));
+	// split: three parts of 33 along the cut axis, weighted differently per part
+	Value y = Value::leaf(Tensor::random({2, 33}, -1.0f, 1.0f), true);
+	Tensor wp = Tensor::random({2, 11}, 0.5f, 2.0f);
+	CHECK(gradcheck([&](Value v) {
+		std::vector<Value> p = split(v, 1, 3);
+		return sum(add(mul(p[0], Value::leaf(wp, false)), scale(mul(p[2], Value::leaf(wp, false)), 2.0f)));
+	}, y));
+}

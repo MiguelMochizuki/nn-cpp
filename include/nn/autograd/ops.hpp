@@ -144,6 +144,54 @@ Value div(const Value& a, const Value& b);
  */
 Value gelu(const Value& x);
 
+/* Public, differentiable masked fill
+ *
+ * Parameters:
+ * Value x: operand
+ * Tensor mask: numpy-broadcastable to x.shape() exactly (it may not enlarge x); nonzero means replace
+ * float value: replacement for masked positions
+ *
+ * Returns Value: x with masked positions set to value; backward passes grad_out where the mask is
+ * zero and 0 where it is set. Throws TensorShapeError if mask does not broadcast to x.shape()
+ */
+Value masked_fill(const Value& x, const Tensor& mask, float value);
+
+/* Public, differentiable half-open range along one axis
+ *
+ * Parameters:
+ * Value x: operand
+ * int axis: dimension to cut, negative counts from the end as in sum
+ * size_t start: first index kept
+ * size_t end: one past the last index kept
+ *
+ * Returns Value: the sub-tensor; backward scatters grad_out into the covered region. Throws
+ * TensorIndexError for a bad axis and TensorShapeError if start >= end or end > size
+ */
+Value slice(const Value& x, int axis, size_t start, size_t end);
+
+/* Public, differentiable concatenation along one axis
+ *
+ * Parameters:
+ * vector<Value> xs: inputs, equal shapes except on axis
+ * int axis: dimension to join, negative counts from the end
+ *
+ * Returns Value: the joined tensor; backward slices grad_out back to each input. Throws
+ * TensorShapeError for an empty list or mismatched shapes
+ */
+Value concat(const std::vector<Value>& xs, int axis);
+
+/* Public, differentiable equal split along one axis
+ *
+ * Parameters:
+ * Value x: operand
+ * int axis: dimension to split, negative counts from the end
+ * size_t parts: number of slices; must divide the axis size
+ *
+ * Returns vector<Value>: parts equal slices in order. Throws TensorShapeError if parts is 0 or
+ * does not divide the axis size
+ */
+std::vector<Value> split(const Value& x, int axis, size_t parts);
+
 /* Public, differentiable dimension permutation
  *
  * Parameters:
