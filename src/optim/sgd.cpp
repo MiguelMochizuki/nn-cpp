@@ -47,8 +47,10 @@ void Optimizer::check_state(const OptimizerState& got, const OptimizerState& exp
 	if (!problems.empty()) throw std::runtime_error("optimizer state mismatch:" + problems);
 }
 
-SGD::SGD(std::vector<Value> params, float lr, float momentum)
-	: Optimizer(std::move(params)), lr_(lr), momentum_(momentum) {
+SGD::SGD(std::vector<Value> params, float lr, float momentum, bool nesterov, float weight_decay)
+	: Optimizer(std::move(params)), lr_(lr), momentum_(momentum), nesterov_(nesterov), weight_decay_(weight_decay) {
+	if (nesterov_ && momentum_ <= 0.0f) throw std::invalid_argument("SGD: nesterov requires momentum > 0");
+	if (weight_decay_ < 0.0f) throw std::invalid_argument("SGD: weight_decay must be >= 0");
 	velocity_.reserve(params_.size());
 	for (const Value& p : params_) {
 		velocity_.push_back(Tensor::zeros(p.data().shape()));
@@ -57,13 +59,15 @@ SGD::SGD(std::vector<Value> params, float lr, float momentum)
 
 void SGD::step() {
 	for (size_t i = 0; i < params_.size(); i++) {
+		Tensor g = params_[i].grad();
+		if (weight_decay_ > 0.0f) g += params_[i].data() * weight_decay_;
 		if (momentum_ > 0.0f) {
 			velocity_[i] *= momentum_;
-			velocity_[i] += params_[i].grad();
-			params_[i].data() -= velocity_[i] * lr_;
-		} else {
-			params_[i].data() -= params_[i].grad() * lr_;
+			velocity_[i] += g;
+			if (nesterov_) g += velocity_[i] * momentum_;
+			else g = velocity_[i];
 		}
+		params_[i].data() -= g * lr_;
 	}
 }
 

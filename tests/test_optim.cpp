@@ -99,6 +99,51 @@ TEST_CASE("SGD load_state rejects duplicate names") {
 	CHECK_THROWS_AS(optimizer.load_state(dup), std::runtime_error);
 }
 
+TEST_CASE("SGD Nesterov momentum steps with g + momentum * velocity") {
+	Value p = Value::leaf(Tensor({1}, 1.0f), true);
+	SGD optimizer({p}, 0.1f, 0.9f, true);
+	p.grad().at({0}) = 0.5f;
+	optimizer.step();
+	CHECK(p.data().get({0}) == doctest::Approx(0.905f));
+	p.grad().at({0}) = 0.5f;
+	optimizer.step();
+	CHECK(p.data().get({0}) == doctest::Approx(0.905f - 0.1f * (0.5f + 0.9f * (0.9f * 0.5f + 0.5f))));
+}
+
+TEST_CASE("SGD weight decay shrinks a zero-gradient parameter by lr * wd * param") {
+	Value p = Value::leaf(Tensor({1}, 2.0f), true);
+	SGD optimizer({p}, 0.5f, 0.0f, false, 0.1f);
+	optimizer.step();
+	CHECK(p.data().get({0}) == doctest::Approx(2.0f - 0.5f * 0.1f * 2.0f));
+}
+
+TEST_CASE("SGD rejects Nesterov without momentum and negative weight decay") {
+	Value p = Value::leaf(Tensor({1}, 0.0f), true);
+	CHECK_THROWS_AS(SGD({p}, 0.1f, 0.0f, true), std::invalid_argument);
+	CHECK_THROWS_AS(SGD({p}, 0.1f, 0.9f, false, -0.1f), std::invalid_argument);
+}
+
+TEST_CASE("Nesterov SGD state has the same keys as plain momentum SGD and round-trips") {
+	Value p = Value::leaf(Tensor({1}, 0.0f), true);
+	Value q = Value::leaf(Tensor({1}, 0.0f), true);
+	SGD plain({p}, 0.1f, 0.9f);
+	SGD a({p}, 0.1f, 0.9f, true, 0.01f);
+	SGD b({q}, 0.1f, 0.9f, true, 0.01f);
+	const OptimizerState expected = plain.state();
+	const OptimizerState got = a.state();
+	REQUIRE(got.size() == expected.size());
+	for (size_t i = 0; i < got.size(); i++) CHECK(got[i].first == expected[i].first);
+	p.grad().at({0}) = 1.0f;
+	a.step();
+	q.data() = p.data();
+	b.load_state(a.state());
+	p.grad().at({0}) = 1.0f;
+	q.grad().at({0}) = 1.0f;
+	a.step();
+	b.step();
+	CHECK(q.data().get({0}) == p.data().get({0}));
+}
+
 TEST_CASE("Adam with a constant gradient moves each step by about lr") {
 	Value p = Value::leaf(Tensor({1}, 0.0f), true);
 	Adam optimizer({p}, 0.1f);
