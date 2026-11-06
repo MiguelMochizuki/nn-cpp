@@ -20,7 +20,8 @@ One row per header under `include/nn/`. Every function and class is documented i
 | `nn/checkpoint.hpp` | `save_checkpoint(path, model, optimizer*, step)`, `load_checkpoint(path, model, optimizer*)` |
 | `nn/nn/loss.hpp` | `cross_entropy_loss(logits, targets)` (and the class-weight / label-smoothing overload), `mse_loss(predictions, targets)` |
 | `nn/optim/optimizer.hpp` | `Optimizer` — base interface (`step()`, `zero_grad()`, `lr()`, `set_lr(lr)`) |
-| `nn/optim/sgd.hpp` | `SGD(params, lr, momentum=0)` |
+| `nn/optim/sgd.hpp` | `SGD(params, lr, momentum=0, nesterov=false, weight_decay=0)` — weight decay is added to the gradient (L2) before the velocity update; Nesterov needs momentum > 0 |
+| `nn/optim/plateau.hpp` | `PlateauMode {Min, Max}`, `ReduceLROnPlateau(opt, mode=Min, factor=0.1, patience=10, threshold=1e-4, cooldown=0, min_lr=0)` — `step(metric)`, `num_bad_epochs()`, `best()` |
 | `nn/optim/adam.hpp` | `Adam(params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8)` |
 | `nn/optim/adamw.hpp` | `AdamW(params, lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=1e-2)` — decoupled weight decay |
 | `nn/optim/scheduler.hpp` | `LRScheduler` (`step()`, `set_step(n)`, `step_count()`, `base_lr()`), `StepLR(opt, step_size, gamma=0.1)`, `CosineAnnealingLR(opt, t_max, eta_min=0)`, `LinearWarmup(opt, inner, warmup_steps)` |
@@ -28,8 +29,8 @@ One row per header under `include/nn/`. Every function and class is documented i
 | `nn/data/dataset.hpp` | `Dataset` — interface (`size()`, `get(index)`) |
 | `nn/data/tensor_dataset.hpp` | `TensorDataset(inputs, targets)` — rows of two tensors as samples |
 | `nn/data/subset.hpp` | `Subset(dataset, indices)`, `random_split(dataset, fractions, seed)` |
-| `nn/data/transform.hpp` | `Transform`, `Compose`, `Normalize(mean, std)`, `RandomHorizontalFlip(p)`, `RandomShift(max_shift)`, `TransformedDataset(dataset, transform)`, `compute_mean_std(dataset)` |
+| `nn/data/transform.hpp` | `Transform`, `Compose`, `Normalize(mean, std)`, `RandomHorizontalFlip(p)`, `RandomShift(max_shift)`, `RandomCrop(size)`, `RandomAffine(max_degrees, max_shift, max_scale, p=0.5)`, `RandomErasing(p=0.5, min_area=0.02, max_area=0.33, min_ratio=0.3, max_ratio=3.3, value=0)`, `ten_crop(sample, size)`, `ten_crop_batch(batch, size)`, `TransformedDataset(dataset, transform)`, `compute_mean_std(dataset)` |
 | `nn/data/fer2013.hpp` | `Fer2013Dataset(csv_path, usage=, image_size=48)` — FER-2013 CSV loader (the data is not included) |
 | `nn/metrics.hpp` | scikit-learn-style classification metrics: `confusion_matrix`, `accuracy_score`, `precision_recall_f1` (per class), `precision_score` / `recall_score` / `f1_score` (`Average::Micro`, `Macro`, `Weighted`; `zero_division`), `classification_report`, plus `argmax_rows` and `to_labels` to get labels from logits and from the `DataLoader`'s float ids |
 | `nn/kernels/parallel.hpp` | `num_threads()`, `set_num_threads(n)`, `parallel_for(n_chunks, fn)`, `parallel_range(n, min_per_chunk, fn)` — fork/join thread pool used by `sgemm` (x86-64), the elementwise ops, ReLU, im2col/col2im and max-pooling |
-| `nn/data/dataloader.hpp` | `DataLoader(dataset, batch_size, shuffle[, drop_last])` — `num_batches()`, `reset_epoch()`, `get_batch(i)`; the shuffle is a portable Fisher-Yates, so a seed gives the same order on every platform |
+| `nn/data/dataloader.hpp` | `DataLoader(dataset, batch_size, shuffle[, drop_last])`, `DataLoader(dataset, batch_size, sample_weights[, num_samples=0, drop_last=false])` (weighted draws with replacement), `balanced_sample_weights(labels, num_classes)` — `num_batches()`, `reset_epoch()`, `get_batch(i)`; the shuffle is a portable Fisher-Yates, so a seed gives the same order on every platform |

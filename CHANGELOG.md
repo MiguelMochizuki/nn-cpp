@@ -3,10 +3,12 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] - 2026-11-05
 
 ### Added
 
+- `SGD` takes `nesterov` and `weight_decay` (L2 added to the gradient before the velocity update); `ReduceLROnPlateau` with `PlateauMode` in `nn/optim/plateau.hpp`.
+- Transforms `RandomCrop`, `RandomAffine` and `RandomErasing`, and the test-time views `ten_crop` and `ten_crop_batch` (four corners and the centre, plus their mirrors).
 - `nn/metrics.hpp`: `confusion_matrix`, `accuracy_score`, `precision_recall_f1`, `precision_score`, `recall_score`, `f1_score` (micro, macro and weighted averages, `zero_division`), `classification_report` laid out like scikit-learn's, and the helpers `argmax_rows` and `to_labels`.
 - `DataLoader` constructor with per-sample weights (draws with replacement, like PyTorch's `WeightedRandomSampler`, portable across platforms), `balanced_sample_weights`, and `Fer2013Dataset::labels()`.
 - `train_fer2013` and `train_mnist` print a classification report; `train_fer2013` also keeps the best epoch by validation macro-F1 and scores it on the PrivateTest rows. All three apps flush their output line by line.
