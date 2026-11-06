@@ -24,6 +24,8 @@ add_library(nn_core STATIC
 	src/autograd/ops.cpp
 	src/nn/linear.cpp
 	src/nn/embedding.cpp
+	src/nn/layernorm.cpp
+	src/nn/positional.cpp
 	src/nn/conv2d.cpp
 	src/nn/pool2d.cpp
 	src/nn/dropout.cpp
