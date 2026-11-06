@@ -6,12 +6,15 @@
 
 #include "doctest/doctest.h"
 #include "gradcheck.hpp"
+#include "nn/nn/attention.hpp"
 #include "nn/nn/embedding.hpp"
 #include "nn/nn/layernorm.hpp"
 #include "nn/nn/positional.hpp"
 #include "nn/autograd/ops.hpp"
 
+#include <cmath>
 #include <limits>
+#include <stdexcept>
 
 using namespace nn;
 
@@ -112,4 +115,104 @@ TEST_CASE("positional encoding sinusoidal and learned") {
 	Value xv = Value::leaf(Tensor::random({2, 4, 3}, -1.0f, 1.0f), false);
 	Value wv = Value::leaf(Tensor::random({2, 4, 3}, 0.5f, 2.0f), false);
 	CHECK(gradcheck([&](Value) { return sum(mul(le.forward(xv), wv)); }, le.parameters()[0]));
+}
+
+namespace {
+Value rand_leaf(std::vector<size_t> s, bool rg = false) { return Value::leaf(Tensor::random(s, -1.0f, 1.0f), rg); }
+}  // namespace
+
+TEST_CASE("attention single head matches hand reference") {
+	MultiHeadAttention a(2, 1);
+	auto ps = a.parameters();
+	for (size_t i = 0; i < 4; i++) {
+		ps[2 * i].data() = Tensor({2, 2}, std::vector<float>{1, 0, 0, 1});
+		ps[2 * i + 1].data() = Tensor::zeros({2});
+	}
+	std::vector<float> x = {1, 0, 0, 2};
+	Value y = a.forward(Value::leaf(Tensor({1, 2, 2}, x), false));
+	CHECK(y.data().shape() == std::vector<size_t>{1, 2, 2});
+	float s = std::sqrt(2.0f);
+	for (int i = 0; i < 2; i++) {
+		float s0 = (x[2 * i] * x[0] + x[2 * i + 1] * x[1]) / s, s1 = (x[2 * i] * x[2] + x[2 * i + 1] * x[3]) / s;
+		float e0 = std::exp(s0), e1 = std::exp(s1), z = e0 + e1;
+		for (int c = 0; c < 2; c++) CHECK(y.data().data()[2 * i + c] == doctest::Approx((e0 * x[c] + e1 * x[2 + c]) / z).epsilon(1e-5));
+	}
+	auto np = a.named_parameters();
+	CHECK(np.size() == 8);
+	CHECK(np[0].first == "q.weight");
+	CHECK(np[1].first == "q.bias");
+	CHECK(np[6].first == "o.weight");
+	CHECK(np[7].first == "o.bias");
+}
+
+TEST_CASE("attention causal ignores the future, non-causal does not") {
+	Tensor x = Tensor::random({2, 4, 4}, -1.0f, 1.0f);
+	// perturb only positions > 1 in each batch element
+	Tensor x2 = x;
+	for (size_t n = 0; n < 2; n++)
+		for (size_t e = (n * 4 + 2) * 4; e < (n * 4 + 4) * 4; e++) x2.data()[e] += 0.7f;
+	for (bool causal : {true, false}) {
+		MultiHeadAttention a(4, 2, causal);
+		Value y1 = a.forward(Value::leaf(x, false)), y2 = a.forward(Value::leaf(x2, false));
+		bool same = true;
+		for (size_t n = 0; n < 2; n++)
+			for (size_t e = n * 16; e < n * 16 + 8; e++) same = same && (y1.data().data()[e] == y2.data().data()[e]);
+		CHECK(same == causal);
+	}
+}
+
+TEST_CASE("attention key padding has no influence, and fully masked rows are finite") {
+	MultiHeadAttention a(4, 2);
+	Tensor x = Tensor::random({2, 4, 4}, -1.0f, 1.0f);
+	Tensor mask({2, 4}, std::vector<float>{1, 1, 0, 0, 1, 1, 1, 0});
+	Tensor x2 = x;
+	for (size_t e = 8; e < 16; e++) x2.data()[e] += 0.7f;  // batch 0, keys 2 and 3
+	for (size_t e = 28; e < 32; e++) x2.data()[e] += 0.7f;  // batch 1, key 3
+	Value xv = Value::leaf(x, false), xv2 = Value::leaf(x2, false);
+	Value y1 = a.attend(xv, xv, mask), y2 = a.attend(xv, xv2, mask);
+	bool same = true;
+	for (size_t e = 0; e < 32; e++) same = same && (y1.data().data()[e] == y2.data().data()[e]);
+	CHECK(same);
+	Value u1 = a.attend(xv, xv), u2 = a.attend(xv, xv2);
+	bool differs = false;
+	for (size_t e = 0; e < 32; e++) differs = differs || (u1.data().data()[e] != u2.data().data()[e]);
+	CHECK(differs);
+
+	Tensor none({2, 4}, std::vector<float>{0, 0, 0, 0, 1, 1, 1, 1});
+	Value y = a.attend(xv, xv, none);
+	for (float f : y.data().data()) CHECK(std::isfinite(f));
+}
+
+TEST_CASE("attention T=1 and shape errors") {
+	MultiHeadAttention a(4, 2, true);
+	Value y = a.forward(rand_leaf({2, 1, 4}));
+	CHECK(y.data().shape() == std::vector<size_t>{2, 1, 4});
+	CHECK_THROWS_AS(MultiHeadAttention(5, 2), std::invalid_argument);
+	CHECK_THROWS_AS(a.attend(rand_leaf({1, 2, 4}), rand_leaf({1, 3, 4})), TensorShapeError);
+	MultiHeadAttention b(4, 2);
+	CHECK(b.attend(rand_leaf({1, 2, 4}), rand_leaf({1, 3, 4})).data().shape() == std::vector<size_t>{1, 2, 4});
+}
+
+TEST_CASE("attention gradcheck on input and q.weight") {
+	MultiHeadAttention a(4, 2, true);
+	Tensor w = Tensor::random({2, 3, 4}, 0.5f, 2.0f);
+	Value x = rand_leaf({2, 3, 4}, true);
+	CHECK(gradcheck([&](Value v) { return sum(mul(a.forward(v), Value::leaf(w, false))); }, x));
+	Value qw = a.parameters()[0];
+	Value xf = rand_leaf({2, 3, 4});
+	CHECK(gradcheck([&](Value) {  // gradcheck perturbs qw in place, so a.forward sees it
+		return sum(mul(a.forward(xf), Value::leaf(w, false)));
+	}, qw));
+}
+
+TEST_CASE("attention train() reaches dropout") {
+	MultiHeadAttention a(4, 2, false, 0.5f);
+	Value x = rand_leaf({1, 4, 4});
+	a.eval();
+	Value e1 = a.forward(x), e2 = a.forward(x);
+	CHECK(e1.data().data() == e2.data().data());
+	a.train();
+	bool differs = false;
+	for (int i = 0; i < 5 && !differs; i++) differs = a.forward(x).data().data() != e1.data().data();
+	CHECK(differs);
 }

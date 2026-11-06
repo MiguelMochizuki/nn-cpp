@@ -25,6 +25,7 @@ add_library(nn_core STATIC
 	src/nn/linear.cpp
 	src/nn/embedding.cpp
 	src/nn/layernorm.cpp
+	src/nn/attention.cpp
 	src/nn/positional.cpp
 	src/nn/conv2d.cpp
 	src/nn/pool2d.cpp
