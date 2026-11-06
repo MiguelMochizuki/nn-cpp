@@ -524,6 +524,7 @@ TEST_CASE("RandomCrop returns a contiguous window and validates the size") {
 	}
 	CHECK(moved);
 	CHECK_THROWS_AS(RandomCrop(8)(same), std::invalid_argument);
+	CHECK_THROWS_AS(RandomCrop(0), std::invalid_argument);
 	CHECK_THROWS_AS(RandomCrop(3)(Tensor({5, 5}, 0.0f)), TensorShapeError);
 	manual_seed(5);
 	Tensor a = RandomCrop(7)(big);
@@ -545,18 +546,35 @@ TEST_CASE("RandomAffine translates, rotates and scales with bilinear zero-fill")
 	dot.data()[4 * 9 + 4] = 1.0f;
 	manual_seed(2);
 	RandomAffine shift(0, 0.5f, 0, 1.0f);
-	for (int i = 0; i < 20; i++) {
+	int changed = 0, up = 0, down = 0, left = 0, right = 0;
+	for (int i = 0; i < 200; i++) {
 		Tensor y = shift(dot);
 		int nonzero = 0;
-		float mass = 0.0f;
-		for (float v : y.data()) {
+		float mass = 0.0f, my = 0.0f, mx = 0.0f;
+		for (size_t k = 0; k < y.size(); k++) {
+			float v = y.data()[k];
 			if (v != 0.0f) nonzero++;
 			mass += v;
+			my += v * static_cast<float>(k / 9);
+			mx += v * static_cast<float>(k % 9);
 			CHECK(v >= 0.0f);
 		}
 		CHECK(nonzero <= 4);
 		CHECK(mass <= 1.0f + 1e-5f);
+		if (y.data() != dot.data()) changed++;
+		// a fully inside dot keeps unit mass, and its centre of mass is the translation
+		if (mass > 0.999f) {
+			if (my / mass < 3.999f) up++;
+			if (my / mass > 4.001f) down++;
+			if (mx / mass < 3.999f) left++;
+			if (mx / mass > 4.001f) right++;
+		}
 	}
+	CHECK(changed > 150);
+	CHECK(up > 20);
+	CHECK(down > 20);
+	CHECK(left > 20);
+	CHECK(right > 20);
 	Tensor ones({1, 33, 33}, 1.0f);
 	RandomAffine rot(10, 0, 0, 1.0f);
 	manual_seed(3);
@@ -580,6 +598,8 @@ TEST_CASE("RandomAffine translates, rotates and scales with bilinear zero-fill")
 	Tensor b = RandomAffine(15, 0.1f, 0.1f)(ones);
 	CHECK(a.data() == b.data());
 	CHECK_THROWS_AS(RandomAffine(-1, 0, 0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(std::numeric_limits<float>::infinity(), 0, 0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(std::nanf(""), 0, 0), std::invalid_argument);
 	CHECK_THROWS_AS(RandomAffine(0, 1.5f, 0), std::invalid_argument);
 	CHECK_THROWS_AS(RandomAffine(0, 0, 1.0f), std::invalid_argument);
 	CHECK_THROWS_AS(RandomAffine(0, 0, 0, 2.0f), std::invalid_argument);
@@ -605,6 +625,7 @@ TEST_CASE("ten_crop returns the four corners and centre then their mirrors") {
 	CHECK(crops[0].data() == std::vector<float>({0, 1, 2, 5, 6, 7, 10, 11, 12}));
 	CHECK(crops[4].data() == std::vector<float>({6, 7, 8, 11, 12, 13, 16, 17, 18}));
 	CHECK_THROWS_AS(ten_crop(x, 6), std::invalid_argument);
+	CHECK_THROWS_AS(ten_crop(x, 0), std::invalid_argument);
 	CHECK_THROWS_AS(ten_crop(Tensor({5, 5}, 0.0f), 3), TensorShapeError);
 }
 
@@ -621,6 +642,7 @@ TEST_CASE("ten_crop_batch stacks ten_crop per sample") {
 		}
 	}
 	CHECK_THROWS_AS(ten_crop_batch(batch, 6), std::invalid_argument);
+	CHECK_THROWS_AS(ten_crop_batch(batch, 0), std::invalid_argument);
 }
 
 TEST_CASE("RandomErasing p = 0 leaves the sample unchanged") {

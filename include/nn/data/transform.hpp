@@ -155,7 +155,7 @@ public:
 	/* Public, build a cropper
 	 *
 	 * Parameters:
-	 * size_t size: side of the square crop
+	 * size_t size: side of the square crop, > 0
 	 *
 	 * Returns RandomCrop: none (constructor)
 	 */
@@ -167,7 +167,7 @@ public:
 	 * const Tensor& sample: shape {C, H, W}
 	 *
 	 * Returns Tensor: shape {C, size, size}; throws TensorShapeError if the rank is not 3,
-	 * std::invalid_argument if size exceeds H or W
+	 * std::invalid_argument if size is 0 or exceeds H or W
 	 */
 	Tensor operator()(const Tensor& sample) override;
 
@@ -192,7 +192,7 @@ public:
 	/* Public, build an affine augmenter
 	 *
 	 * Parameters:
-	 * float max_degrees: rotation drawn uniformly from [-max_degrees, max_degrees], >= 0
+	 * float max_degrees: rotation drawn uniformly from [-max_degrees, max_degrees], finite and >= 0
 	 * float max_shift: translation fraction drawn from [-max_shift, max_shift], in [0, 1]
 	 * float max_scale: scale drawn from [1 - max_scale, 1 + max_scale], in [0, 1)
 	 * float p: probability of applying each component, in [0, 1]
@@ -275,10 +275,10 @@ private:
  *
  * Parameters:
  * const Tensor& sample: shape {C, H, W}
- * size_t size: side of each square crop
+ * size_t size: side of each square crop, > 0
  *
  * Returns vector<Tensor>: ten tensors {C, size, size}; throws TensorShapeError if the rank is
- * not 3, std::invalid_argument if size exceeds H or W
+ * not 3, std::invalid_argument if size is 0 or exceeds H or W
  */
 std::vector<Tensor> ten_crop(const Tensor& sample, size_t size);
 
@@ -287,10 +287,10 @@ std::vector<Tensor> ten_crop(const Tensor& sample, size_t size);
  *
  * Parameters:
  * const Tensor& batch: shape {N, C, H, W}
- * size_t size: side of each square crop
+ * size_t size: side of each square crop, > 0
  *
  * Returns vector<Tensor>: ten tensors {N, C, size, size}; throws TensorShapeError if the rank
- * is not 4, std::invalid_argument if size exceeds H or W
+ * is not 4, std::invalid_argument if size is 0 or exceeds H or W
  */
 std::vector<Tensor> ten_crop_batch(const Tensor& batch, size_t size);
 

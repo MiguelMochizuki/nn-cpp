@@ -98,7 +98,9 @@ Tensor RandomShift::operator()(const Tensor& sample) {
 	return out;
 }
 
-RandomCrop::RandomCrop(size_t size) : size_(size), rng_(derive_generator("transform.crop")) {}
+RandomCrop::RandomCrop(size_t size) : size_(size), rng_(derive_generator("transform.crop")) {
+	if (size == 0) throw std::invalid_argument("RandomCrop: size must be > 0");
+}
 
 namespace {
 
@@ -117,6 +119,9 @@ void check_crop(const Tensor& sample, size_t rank, size_t size) {
 	if (sample.shape().size() != rank) {
 		throw TensorShapeError();
 	}
+	if (size == 0) {
+		throw std::invalid_argument("crop: size must be > 0");
+	}
 	if (size > sample.shape()[rank - 2] || size > sample.shape()[rank - 1]) {
 		throw std::invalid_argument("crop: size exceeds the image");
 	}
@@ -133,7 +138,7 @@ Tensor RandomCrop::operator()(const Tensor& sample) {
 
 RandomAffine::RandomAffine(float max_degrees, float max_shift, float max_scale, float p)
 	: max_degrees_(max_degrees), max_shift_(max_shift), max_scale_(max_scale), p_(p), rng_(derive_generator("transform.affine")) {
-	if (!(max_degrees >= 0.0f)) throw std::invalid_argument("RandomAffine: max_degrees must be >= 0");
+	if (!(max_degrees >= 0.0f && std::isfinite(max_degrees))) throw std::invalid_argument("RandomAffine: max_degrees must be finite and >= 0");
 	if (!(max_shift >= 0.0f && max_shift <= 1.0f)) throw std::invalid_argument("RandomAffine: max_shift must be in [0, 1]");
 	if (!(max_scale >= 0.0f && max_scale < 1.0f)) throw std::invalid_argument("RandomAffine: max_scale must be in [0, 1)");
 	if (!(p >= 0.0f && p <= 1.0f)) throw std::invalid_argument("RandomAffine: p must be in [0, 1]");
