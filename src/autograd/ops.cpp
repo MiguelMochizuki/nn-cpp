@@ -1122,6 +1122,79 @@ Value cross_entropy_loss(const Value& logits, const Tensor& targets, const Tenso
 		});
 }
 
+Value sequence_cross_entropy(const Value& logits, const Tensor& targets, int ignore_index,
+	float label_smoothing) {
+	const Tensor& logits_data = logits.data();
+	if (logits_data.ndim() != 3) throw TensorShapeError();
+	size_t N = logits_data.shape()[0], T = logits_data.shape()[1], V = logits_data.shape()[2];
+	if (targets.ndim() != 2 || targets.shape()[0] != N || targets.shape()[1] != T) throw TensorShapeError();
+	if (!(label_smoothing >= 0.0f && label_smoothing < 1.0f)) {
+		throw std::invalid_argument("sequence_cross_entropy: label_smoothing must be in [0, 1)");
+	}
+	const size_t P = N * T;
+	// target_idx[p] == V marks an ignored position
+	std::vector<size_t> target_idx(P);
+	size_t count = 0;
+	for (size_t p = 0; p < P; p++) {
+		float t = std::round(targets.data()[p]);
+		if (t == static_cast<float>(ignore_index)) {
+			target_idx[p] = V;
+			continue;
+		}
+		if (!(t >= 0.0f && t < static_cast<float>(V))) {
+			throw std::invalid_argument("sequence_cross_entropy: target out of range");
+		}
+		target_idx[p] = static_cast<size_t>(t);
+		count++;
+	}
+	if (count == 0) throw std::invalid_argument("sequence_cross_entropy: every position is ignored");
+
+	Tensor softmax_val(logits_data.shape(), 0.0f);
+	std::vector<float> pos_loss(P, 0.0f);
+	const float inv_v = 1.0f / static_cast<float>(V);
+	kernels::parallel_range(P, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, V)),
+		[&](size_t lo, size_t hi) {
+			for (size_t p = lo; p < hi; p++) {
+				if (target_idx[p] == V) continue;
+				const float* row = logits_data.data().data() + p * V;
+				float* sm = softmax_val.data().data() + p * V;
+				float max_val = row[0];
+				for (size_t c = 1; c < V; c++) max_val = std::max(max_val, row[c]);
+				float sum_exp = 0.0f;
+				for (size_t c = 0; c < V; c++) sum_exp += std::exp(row[c] - max_val);
+				float log_sum_exp = std::log(sum_exp);
+				float mean_nll = 0.0f;
+				for (size_t c = 0; c < V; c++) {
+					float log_prob = row[c] - max_val - log_sum_exp;
+					sm[c] = std::exp(log_prob);
+					mean_nll -= log_prob * inv_v;
+				}
+				float nll = -(row[target_idx[p]] - max_val - log_sum_exp);
+				pos_loss[p] = (1.0f - label_smoothing) * nll + label_smoothing * mean_nll;
+			}
+		});
+	double total_loss = 0.0;  // serial, in position order: independent of thread count
+	for (size_t p = 0; p < P; p++) total_loss += pos_loss[p];
+
+	Tensor result({1}, static_cast<float>(total_loss / static_cast<double>(count)));
+	float inv_count = 1.0f / static_cast<float>(count);
+	return Value::node(std::move(result), {logits},
+		[logits, softmax_val, target_idx, P, V, label_smoothing, inv_count](const Tensor& grad_out) {
+			if (!logits.requires_grad()) return;
+			Tensor local_grad(softmax_val.shape(), 0.0f);
+			float g = grad_out.data()[0] * inv_count;
+			for (size_t p = 0; p < P; p++) {
+				if (target_idx[p] == V) continue;
+				const float* sm = softmax_val.data().data() + p * V;
+				float* row = local_grad.data().data() + p * V;
+				for (size_t c = 0; c < V; c++) row[c] = sm[c] - label_smoothing / static_cast<float>(V);
+				row[target_idx[p]] -= 1.0f - label_smoothing;
+				for (size_t c = 0; c < V; c++) row[c] *= g;
+			}
+			logits.grad() += local_grad;
+		});
+}
+
 Value mse_loss(const Value& predictions, const Value& targets) {
 	Value diff = sub(predictions, targets);
 	Value squared = mul(diff, diff);

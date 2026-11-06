@@ -382,6 +382,24 @@ Value cross_entropy_loss(const Value& logits, const Tensor& targets);
 Value cross_entropy_loss(const Value& logits, const Tensor& targets, const Tensor& class_weights,
 	float label_smoothing = 0.0f);
 
+/* Public, differentiable sequence cross entropy with an ignored target id
+ *
+ * Parameters:
+ * Value logits: raw model output, shape {N, T, V}
+ * Tensor targets: class id per position stored as a float, shape {N, T}
+ * int ignore_index: positions whose target equals this id are excluded from the loss and the
+ * gradient (default -100)
+ * float label_smoothing: s in [0, 1), the share of the target mass spread uniformly over all V classes
+ *
+ * Returns Value: scalar shape {1}, the mean over the non-ignored positions of
+ * (1-s) * (-log p[y]) + s * mean_c(-log p[c]); backward is fused,
+ * (softmax - (1-s) * one_hot - s / V) / count, exactly 0 on ignored positions. Throws
+ * TensorShapeError on a shape mismatch, std::invalid_argument on a target outside [0, V) that is
+ * not ignore_index, a label_smoothing outside [0, 1) or when every position is ignored
+ */
+Value sequence_cross_entropy(const Value& logits, const Tensor& targets, int ignore_index = -100,
+	float label_smoothing = 0.0f);
+
 /* Public, differentiable mean squared error
  *
  * Parameters:

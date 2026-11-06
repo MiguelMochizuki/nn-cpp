@@ -49,7 +49,7 @@ On real MNIST (3 epochs, 8 threads) `train_mnist` reaches 98.58% test accuracy i
 |---|---|
 | **Tensor** | N-D `float` arrays, broadcasting arithmetic, axis reductions, batched matmul |
 | **Layers** | `Linear`, `Conv2d` (stride, padding, dilation, groups), `MaxPool2d`, `AvgPool2d`, `GlobalAvgPool2d`, `BatchNorm1d/2d`, `Dropout`, `Flatten`, `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `Sequential` |
-| **Losses** | `cross_entropy_loss` (class weights, label smoothing), `mse_loss` |
+| **Losses** | `cross_entropy_loss` (class weights, label smoothing), `sequence_cross_entropy` (ignore index), `mse_loss` |
 | **Optimization** | `SGD` (momentum, Nesterov, weight decay), `Adam`, `AdamW`, `StepLR`, `CosineAnnealingLR`, `LinearWarmup`, `ReduceLROnPlateau`, `clip_grad_norm`, `clip_grad_value` |
 | **Data** | `Dataset`, `DataLoader`, `TensorDataset`, `random_split`, `Normalize`, `RandomHorizontalFlip`, `RandomShift`, `RandomCrop`, `RandomAffine`, `RandomErasing`, `ten_crop`, `ten_crop_batch`, weighted-sampling `DataLoader` with `balanced_sample_weights`, FER-2013 CSV loader |
 | **Metrics** | `confusion_matrix`, `precision_score` / `recall_score` / `f1_score` (micro, macro, weighted), `classification_report` |

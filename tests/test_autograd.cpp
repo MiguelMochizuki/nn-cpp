@@ -1147,6 +1147,70 @@ TEST_CASE("weighted cross_entropy_loss rejects bad input") {
 	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{0, 0, 1})), std::invalid_argument);
 }
 
+TEST_CASE("sequence_cross_entropy equals cross_entropy_loss when nothing is ignored") {
+	Tensor lv = Tensor::random({2, 3, 4}, -2.0f, 2.0f);
+	Tensor tg({2, 3}, std::vector<float>{0, 1, 2, 3, 3, 1});
+	Tensor flat_lv = lv.reshape({6, 4});
+	Tensor flat_tg = tg.reshape({6});
+	Value a = Value::leaf(lv, true), b = Value::leaf(flat_lv, true);
+	Value la = sequence_cross_entropy(a, tg), lb = cross_entropy_loss(b, flat_tg);
+	CHECK(la.data().data()[0] == doctest::Approx(lb.data().data()[0]).epsilon(1e-6));
+	// smoothing 0.1 against the weighted overload with unit weights
+	Value c = Value::leaf(lv, true), d = Value::leaf(flat_lv, true);
+	Value ls = sequence_cross_entropy(c, tg, -100, 0.1f), ld = cross_entropy_loss(d, flat_tg, Tensor({4}, 1.0f), 0.1f);
+	CHECK(ls.data().data()[0] == doctest::Approx(ld.data().data()[0]).epsilon(1e-6));
+	la.backward(); lb.backward(); ls.backward(); ld.backward();
+	for (size_t i = 0; i < lv.size(); i++) {
+		CHECK(a.grad().data()[i] == doctest::Approx(b.grad().data()[i]).epsilon(1e-5));
+		CHECK(c.grad().data()[i] == doctest::Approx(d.grad().data()[i]).epsilon(1e-5));
+	}
+}
+
+TEST_CASE("sequence_cross_entropy skips ignored positions") {
+	Tensor lv = Tensor::random({2, 3, 4}, -2.0f, 2.0f);
+	Tensor tg({2, 3}, std::vector<float>{0, -100, 2, 3, -100, 1});
+	Value x = Value::leaf(lv, true);
+	Value loss = sequence_cross_entropy(x, tg);
+	// reference: mean over the four kept positions via cross_entropy_loss
+	Tensor kl({4, 4}), kt({4});
+	size_t keep[4] = {0, 2, 3, 5};
+	for (size_t i = 0; i < 4; i++) {
+		for (size_t c = 0; c < 4; c++) kl.data()[i * 4 + c] = lv.data()[keep[i] * 4 + c];
+		kt.data()[i] = tg.data()[keep[i]];
+	}
+	Value ref = cross_entropy_loss(Value::leaf(kl, false), kt);
+	CHECK(loss.data().data()[0] == doctest::Approx(ref.data().data()[0]).epsilon(1e-6));
+	loss.backward();
+	for (size_t p : {size_t{1}, size_t{4}}) {
+		for (size_t c = 0; c < 4; c++) CHECK(x.grad().data()[p * 4 + c] == 0.0f);
+	}
+	// a custom ignore id works too
+	Tensor tg2 = tg;
+	for (float& v : tg2.data()) if (v == -100.0f) v = 7.0f;
+	CHECK(sequence_cross_entropy(Value::leaf(lv, false), tg2, 7).data().data()[0]
+		== doctest::Approx(ref.data().data()[0]).epsilon(1e-6));
+}
+
+TEST_CASE("sequence_cross_entropy gradcheck") {
+	for (auto shape : {std::vector<size_t>{1, 1, 3}, std::vector<size_t>{2, 5, 7}}) {
+		size_t P = shape[0] * shape[1], V = shape[2];
+		Tensor tg({shape[0], shape[1]});
+		for (size_t i = 0; i < P; i++) tg.data()[i] = (i % 4 == 3 && P > 1) ? -100.0f : static_cast<float>((i * 5) % V);
+		auto f = [tg](Value l) { return sequence_cross_entropy(l, tg, -100, 0.1f); };
+		Value x = Value::leaf(Tensor::random(shape, -2.0f, 2.0f), true);
+		CHECK(gradcheck(f, x, 1e-3f, 0.05f));
+	}
+}
+
+TEST_CASE("sequence_cross_entropy rejects bad input") {
+	Value logits = Value::leaf(Tensor({1, 2, 3}, 0.0f), false);
+	CHECK_THROWS_AS(sequence_cross_entropy(logits, Tensor({2}, 0.0f)), TensorShapeError);
+	CHECK_THROWS_AS(sequence_cross_entropy(Value::leaf(Tensor({2, 3}, 0.0f), false), Tensor({2}, 0.0f)), TensorShapeError);
+	CHECK_THROWS_AS(sequence_cross_entropy(logits, Tensor({1, 2}, std::vector<float>{0, 3})), std::invalid_argument);
+	CHECK_THROWS_AS(sequence_cross_entropy(logits, Tensor({1, 2}, std::vector<float>{0, 1}), -100, 1.0f), std::invalid_argument);
+	CHECK_THROWS_AS(sequence_cross_entropy(logits, Tensor({1, 2}, std::vector<float>{-100, -100})), std::invalid_argument);
+}
+
 TEST_CASE("axis reductions over a zero-length axis throw") {
 	Value x = Value::leaf(Tensor({0, 3}, 0.0f), false);
 	CHECK_THROWS_AS(mean(x, 0), TensorShapeError);
