@@ -10,10 +10,19 @@
 #include "nn/nn/embedding.hpp"
 #include "nn/nn/layernorm.hpp"
 #include "nn/nn/positional.hpp"
+#include "nn/nn/activation.hpp"
+#include "nn/nn/transformer.hpp"
+#include "nn/checkpoint.hpp"
+#include "nn/optim/adamw.hpp"
+#include "nn/random.hpp"
 #include "nn/autograd/ops.hpp"
 
 #include <cmath>
+#include <filesystem>
 #include <limits>
+#include <random>
+#include <set>
+#include <string>
 #include <stdexcept>
 
 using namespace nn;
@@ -283,4 +292,147 @@ TEST_CASE("attention train() reaches dropout") {
 	bool differs = false;
 	for (int i = 0; i < 5 && !differs; i++) differs = a.forward(x).data().data() != e1.data().data();
 	CHECK(differs);
+}
+
+TEST_CASE("GELU module forward and gradcheck") {
+	GELU g;
+	CHECK(g.parameters().empty());
+	Value y = g.forward(Value::leaf(Tensor({3}, std::vector<float>{0.0f, 1.0f, -1.0f}), false));
+	CHECK(y.data().data()[0] == doctest::Approx(0.0f));
+	CHECK(y.data().data()[1] == doctest::Approx(0.8412f).epsilon(1e-3));
+	CHECK(y.data().data()[2] == doctest::Approx(-0.1588f).epsilon(1e-3));
+	Tensor w = Tensor::random({2, 3}, 0.5f, 2.0f);
+	CHECK(gradcheck([&](Value v) { return sum(mul(g.forward(v), Value::leaf(w, false))); },
+		Value::leaf(Tensor::random({2, 3}, -2.0f, 2.0f), true)));
+}
+
+namespace {
+
+TransformerConfig small_config(bool causal = true) {
+	TransformerConfig c{11, 8, 2, 2, 16};
+	c.causal = causal;
+	return c;
+}
+
+Value ids_of(const std::vector<float>& v, size_t N, size_t T) { return Value::leaf(Tensor({N, T}, v), false); }
+
+}  // namespace
+
+TEST_CASE("transformer parameter count, unique names, order") {
+	manual_seed(1);
+	Transformer t(small_config());
+	size_t V = 11, D = 8, total = V * D;
+	total += 2 * (2 * D + 4 * (D * D + D) + 2 * D + (D * 4 * D + 4 * D) + (4 * D * D + D));
+	total += 2 * D + D * V + V;
+	size_t counted = 0;
+	for (const Value& p : t.parameters()) counted += p.data().size();
+	CHECK(counted == total);
+	auto np = t.named_parameters();
+	std::set<std::string> names;
+	for (const auto& p : np) names.insert(p.first);
+	CHECK(names.size() == np.size());
+	CHECK(np.size() == t.parameters().size());
+	CHECK(names.count("embed.weight") == 1);
+	CHECK(names.count("blocks.1.attn.q.weight") == 1);
+	CHECK(names.count("blocks.0.ln1.gamma") == 1);
+	CHECK(names.count("ln_f.beta") == 1);
+	CHECK(names.count("head.bias") == 1);
+	for (size_t i = 0; i < np.size(); i++) CHECK(np[i].second.data().data().data() == t.parameters()[i].data().data().data());
+}
+
+TEST_CASE("transformer rejects invalid config") {
+	TransformerConfig c = small_config();
+	c.dim = 9;
+	CHECK_THROWS_AS(Transformer{c}, std::invalid_argument);
+	for (int i = 0; i < 6; i++) {
+		c = small_config();
+		(i == 0 ? c.vocab_size : i == 1 ? c.dim : i == 2 ? c.heads : i == 3 ? c.layers : i == 4 ? c.max_len : c.mlp_ratio) = 0;
+		CHECK_THROWS_AS(Transformer{c}, std::invalid_argument);
+	}
+	CHECK_THROWS_AS(TransformerBlock(8, 3, 4, 0.0f, true), std::invalid_argument);
+}
+
+TEST_CASE("transformer causal property") {
+	for (bool causal : {true, false}) {
+		manual_seed(1);
+		Transformer t(small_config(causal));
+		t.eval();
+		std::vector<float> a{1, 2, 3, 4, 5}, b = a;
+		b[4] = 9;
+		Tensor la = t.forward(ids_of(a, 1, 5)).data(), lb = t.forward(ids_of(b, 1, 5)).data();
+		CHECK(la.shape() == std::vector<size_t>{1, 5, 11});
+		bool earlier_same = true;
+		for (size_t i = 0; i < 4 * 11; i++) earlier_same = earlier_same && la.data()[i] == lb.data()[i];
+		CHECK(earlier_same == causal);
+	}
+}
+
+TEST_CASE("transformer checkpoint round trip") {
+	manual_seed(1);
+	Transformer a(small_config());
+	manual_seed(2);
+	Transformer b(small_config());
+	std::string path = (std::filesystem::temp_directory_path() / "nn_transformer_ckpt.bin").string();
+	save_checkpoint(path, a);
+	load_checkpoint(path, b);
+	std::filesystem::remove(path);
+	a.eval();
+	b.eval();
+	Value ids = ids_of({1, 2, 3, 4, 5, 6}, 2, 3);
+	CHECK(a.forward(ids).data().data() == b.forward(ids).data().data());
+}
+
+TEST_CASE("transformer train() reaches dropout in blocks") {
+	manual_seed(1);
+	TransformerConfig c = small_config();
+	c.dropout = 0.5f;
+	Transformer t(c);
+	Value ids = ids_of({1, 2, 3, 4}, 1, 4);
+	t.eval();
+	std::vector<float> e = t.forward(ids).data().data();
+	CHECK(t.forward(ids).data().data() == e);
+	t.train();
+	bool differs = false;
+	for (int i = 0; i < 5 && !differs; i++) differs = t.forward(ids).data().data() != e;
+	CHECK(differs);
+}
+
+namespace {
+
+// Trains next = (prev + 1) mod 8 and returns {first loss, last loss}
+std::pair<float, float> train_successor(int steps) {
+	manual_seed(1);
+	TransformerConfig c{8, 16, 2, 1, 8};
+	Transformer t(c);
+	AdamW opt(t.parameters(), 3e-3f);
+	std::mt19937 rng(123);
+	const size_t N = 32, T = 8;
+	float first = 0.0f, last = 0.0f;
+	for (int s = 0; s < steps; s++) {
+		std::vector<float> x(N * T), y(N * T);
+		for (size_t i = 0; i < N * T; i++) {
+			x[i] = static_cast<float>(rng() % 8);
+			y[i] = static_cast<float>((static_cast<int>(x[i]) + 1) % 8);
+		}
+		opt.zero_grad();
+		Value loss = sequence_cross_entropy(t.forward(ids_of(x, N, T)), Tensor({N, T}, y));
+		loss.backward();
+		opt.step();
+		last = loss.data().data()[0];
+		if (s == 0) first = last;
+	}
+	return {first, last};
+}
+
+}  // namespace
+
+TEST_CASE("transformer learns successor task") {
+	auto r = train_successor(300);
+	MESSAGE("first " << r.first << " last " << r.second);
+	CHECK(r.second < 0.1f);
+	CHECK(r.second < 0.1f * r.first);
+}
+
+TEST_CASE("transformer training is deterministic") {
+	CHECK(train_successor(20).second == train_successor(20).second);
 }
