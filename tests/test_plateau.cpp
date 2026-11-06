@@ -22,8 +22,9 @@ TEST_CASE("plateau reduces the lr after patience epochs without improvement (Max
 	sched.step(0.5f);
 	sched.step(0.6f);
 	sched.step(0.6f);
+	sched.step(0.6f);
 	CHECK(opt.lr() == 1.0f);
-	CHECK(sched.num_bad_epochs() == 1);
+	CHECK(sched.num_bad_epochs() == 2);
 	sched.step(0.6f);
 	CHECK(opt.lr() == 0.5f);
 	CHECK(sched.num_bad_epochs() == 0);
@@ -92,14 +93,19 @@ TEST_CASE("plateau cooldown suppresses bad-epoch counting after a reduction") {
 	SGD opt({dummy_param()}, 1.0f);
 	ReduceLROnPlateau sched(opt, PlateauMode::Min, 0.5f, 1, 0.0f, 2);
 	sched.step(1.0f);
-	sched.step(1.0f); // bad, reduces
+	sched.step(1.0f); // bad 1
+	CHECK(opt.lr() == 1.0f);
+	sched.step(1.0f); // bad 2 > patience, reduces
 	CHECK(opt.lr() == 0.5f);
 	sched.step(1.0f); // cooldown
 	CHECK(sched.num_bad_epochs() == 0);
 	sched.step(1.0f); // cooldown
 	CHECK(sched.num_bad_epochs() == 0);
 	CHECK(opt.lr() == 0.5f);
-	sched.step(1.0f); // counted again
+	sched.step(1.0f); // counted again: bad 1
+	CHECK(sched.num_bad_epochs() == 1);
+	CHECK(opt.lr() == 0.5f);
+	sched.step(1.0f); // bad 2
 	CHECK(opt.lr() == 0.25f);
 }
 
@@ -110,6 +116,8 @@ TEST_CASE("plateau treats a NaN metric as a bad epoch and never as best") {
 	sched.step(std::nanf(""));
 	CHECK(sched.num_bad_epochs() == 1);
 	CHECK(sched.best() == 1.0f);
+	sched.step(std::nanf(""));
+	CHECK(opt.lr() == 1.0f);
 	sched.step(std::nanf(""));
 	CHECK(opt.lr() == 0.5f);
 	CHECK(sched.best() == 1.0f);

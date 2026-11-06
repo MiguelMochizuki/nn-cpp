@@ -38,7 +38,7 @@ void ReduceLROnPlateau::step(float metric) {
 		--cooldown_left_;
 		bad_epochs_ = 0;
 	}
-	if (bad_epochs_ > 0 && bad_epochs_ >= patience_) {
+	if (bad_epochs_ > patience_) {
 		float old_lr = opt_.lr();
 		float new_lr = std::max(old_lr * factor_, min_lr_);
 		if (old_lr - new_lr > 1e-8f) opt_.set_lr(new_lr);

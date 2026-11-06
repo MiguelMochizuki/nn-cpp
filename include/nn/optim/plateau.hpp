@@ -16,10 +16,10 @@ namespace nn {
 enum class PlateauMode { Min, Max };
 
 /*
- * Multiplies the optimizer's lr by factor once the metric has not improved for patience epochs
+ * Multiplies the optimizer's lr by factor after more than patience consecutive non-improving epochs
  * (PyTorch ReduceLROnPlateau with threshold_mode='rel'). An epoch improves when
  * metric < best * (1 - threshold) in Min mode, or metric > best * (1 + threshold) in Max mode.
- * After a reduction the bad-epoch counter resets and the next cooldown epochs are not counted.
+ * num_bad_epochs() counts those epochs. After a reduction the bad-epoch counter resets and the next cooldown epochs are not counted.
  * The lr never rises and never goes below min_lr; if a reduction would change the lr by less
  * than 1e-8 (PyTorch's eps) the lr is left untouched, though the counter and cooldown still
  * restart. A NaN metric is a bad epoch and never becomes best(). Holds a reference to the
@@ -46,7 +46,7 @@ public:
 	 * Optimizer& opt: optimizer to drive; must outlive this scheduler
 	 * PlateauMode mode: Min if lower metrics are better, Max if higher are
 	 * float factor: lr multiplier on a reduction, in (0, 1)
-	 * size_t patience: consecutive non-improving epochs before a reduction
+	 * size_t patience: non-improving epochs tolerated; the lr is cut on the one after
 	 * float threshold: relative improvement margin, non-negative
 	 * size_t cooldown: epochs after a reduction in which bad epochs are not counted
 	 * float min_lr: lower bound for the lr, non-negative
