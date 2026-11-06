@@ -1238,19 +1238,26 @@ TEST_CASE("slice concat split forward and errors") {
 TEST_CASE("masked_fill slice concat split gradcheck") {
 	for (size_t n : {size_t(1), size_t(7), size_t(33)}) {
 		for (int ax : {0, 1, -1}) {
-			std::vector<size_t> shape = {3, n};
-			if (ax == 0) shape = {n, 3};
-			Value x = Value::leaf(Tensor::random(shape, -1.0f, 1.0f), true);
+			std::vector<size_t> shape = ax == 0 ? std::vector<size_t>{n, 3} : std::vector<size_t>{3, n};
 			size_t ai = ax == -1 ? 1 : static_cast<size_t>(ax);
-			Tensor w1 = Tensor::random(shape, 0.5f, 2.0f);
 			size_t a = shape[ai];
+			Value x = Value::leaf(Tensor::random(shape, -1.0f, 1.0f), true);
+			Value w1 = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), false);
+
+			// Alternating 0/1 mask along the cut axis; broadcast over the other axis.
+			std::vector<float> flags(a);
+			for (size_t i = 0; i < a; i++) flags[i] = static_cast<float>(i % 2);
+			Tensor mask(ax == 0 ? std::vector<size_t>{a, 1} : std::vector<size_t>{a}, flags);
+			CHECK(gradcheck([&](Value v) { return sum(mul(masked_fill(v, mask, 3.0f), w1)); }, x));
+
+			size_t lo = a > 1 ? 1 : 0;
 			std::vector<size_t> ws = shape;
-			ws[ai] = a > 1 ? a - 1 : 1;
-			Tensor w2 = Tensor::random(ws, 0.5f, 2.0f);
-			CHECK(gradcheck([&](Value v) { return sum(mul(masked_fill(v, Tensor(std::vector<size_t>{shape[1]}, std::vector<float>(shape[1], 0.0f)), 0.0f), Value::leaf(w1, false))); }, x));
-			if (a > 1) CHECK(gradcheck([&](Value v) { return sum(mul(slice(v, ax, 1, a), Value::leaf(w2, false))); }, x));
-			else CHECK(gradcheck([&](Value v) { return sum(mul(slice(v, ax, 0, 1), Value::leaf(w2, false))); }, x));
-			CHECK(gradcheck([&](Value v) { return sum(mul(concat({v, v}, ax), Value::leaf(concat({Value::leaf(w1, false), Value::leaf(w1, false)}, ax).data(), false))); }, x));
+			ws[ai] = a - lo;
+			Value w2 = Value::leaf(Tensor::random(ws, 0.5f, 2.0f), false);
+			CHECK(gradcheck([&](Value v) { return sum(mul(slice(v, ax, lo, a), w2)); }, x));
+
+			Value w3 = concat({w1, w1}, ax);
+			CHECK(gradcheck([&](Value v) { return sum(mul(concat({v, v}, ax), w3)); }, x));
 		}
 	}
 	// masked_fill with a real mask, weighted loss
@@ -1265,4 +1272,13 @@ TEST_CASE("masked_fill slice concat split gradcheck") {
 		std::vector<Value> p = split(v, 1, 3);
 		return sum(add(mul(p[0], Value::leaf(wp, false)), scale(mul(p[2], Value::leaf(wp, false)), 2.0f)));
 	}, y));
+}
+
+TEST_CASE("split inverts concat bit for bit and oversized mask dim is rejected") {
+	Value a = Value::leaf(Tensor::random({2, 5}, -1.0f, 1.0f), false);
+	std::vector<Value> halves = split(concat({a, a}, 1), 1, 2);
+	CHECK(halves[0].data().data() == a.data().data());
+	CHECK(halves[1].data().data() == a.data().data());
+	Value x = Value::leaf(Tensor({1, 3}, 1.0f), false);
+	CHECK_THROWS_AS(masked_fill(x, Tensor({2, 3}, 1.0f), 0.0f), TensorShapeError);
 }
