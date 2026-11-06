@@ -21,12 +21,20 @@ enum class Average {
 	Weighted,  // mean over the classes weighted by their support
 };
 
-/** Per-class scores, one entry per class id 0 .. num_classes - 1 */
+/**
+ * Per-class scores, one entry per class id 0 .. num_classes - 1
+ *
+ * Attributes:
+ * std::vector<float> precision: true positives / predicted positives of each class
+ * std::vector<float> recall: true positives / actual positives of each class
+ * std::vector<float> f1: harmonic mean of precision and recall of each class
+ * std::vector<size_t> support: number of true samples of each class
+ */
 struct ClassScores {
 	std::vector<float> precision;
 	std::vector<float> recall;
 	std::vector<float> f1;
-	std::vector<size_t> support;  // number of true samples of each class
+	std::vector<size_t> support;
 };
 
 /**
@@ -35,7 +43,8 @@ struct ClassScores {
  * Parameters:
  * const Tensor& ids: tensor whose elements are non-negative integers
  *
- * Returns std::vector<size_t>: one label per element; throws std::invalid_argument for a non-integral or negative value
+ * Returns std::vector<size_t>: one label per element; throws std::invalid_argument for a non-integral, negative,
+ * non-finite or too large (>= 2^32) value
  */
 std::vector<size_t> to_labels(const Tensor& ids);
 
@@ -98,7 +107,8 @@ ClassScores precision_recall_f1(const std::vector<size_t>& y_true, const std::ve
  * Average average: how to combine the classes
  * float zero_division: value used when a denominator is zero
  *
- * Returns float: the averaged score; Macro averages over all num_classes classes, including absent ones
+ * Returns float: the averaged score; Macro averages over all num_classes classes, including absent ones; empty
+ * input gives zero_division under Micro and Macro
  */
 float precision_score(const std::vector<size_t>& y_true, const std::vector<size_t>& y_pred, size_t num_classes,
                       Average average = Average::Macro, float zero_division = 0.0f);
@@ -106,9 +116,14 @@ float precision_score(const std::vector<size_t>& y_true, const std::vector<size_
 /**
  * Recall combined over the classes as chosen by average
  *
- * Parameters: as precision_score
+ * Parameters:
+ * const std::vector<size_t>& y_true: true labels
+ * const std::vector<size_t>& y_pred: predicted labels, same length
+ * size_t num_classes: number of classes
+ * Average average: how to combine the classes
+ * float zero_division: value used when a denominator is zero
  *
- * Returns float: the averaged score
+ * Returns float: the averaged score; empty input gives zero_division under Micro and Macro
  */
 float recall_score(const std::vector<size_t>& y_true, const std::vector<size_t>& y_pred, size_t num_classes,
                    Average average = Average::Macro, float zero_division = 0.0f);
@@ -117,9 +132,14 @@ float recall_score(const std::vector<size_t>& y_true, const std::vector<size_t>&
  * F1 (harmonic mean of precision and recall) combined over the classes as chosen by average. Macro and
  * Weighted average the per-class F1 values; Micro is the F1 of the pooled counts.
  *
- * Parameters: as precision_score
+ * Parameters:
+ * const std::vector<size_t>& y_true: true labels
+ * const std::vector<size_t>& y_pred: predicted labels, same length
+ * size_t num_classes: number of classes
+ * Average average: how to combine the classes
+ * float zero_division: value used when a denominator is zero
  *
- * Returns float: the averaged score
+ * Returns float: the averaged score; empty input gives zero_division under Micro and Macro
  */
 float f1_score(const std::vector<size_t>& y_true, const std::vector<size_t>& y_pred, size_t num_classes,
                Average average = Average::Macro, float zero_division = 0.0f);
@@ -133,10 +153,10 @@ float f1_score(const std::vector<size_t>& y_true, const std::vector<size_t>& y_p
  * const std::vector<size_t>& y_pred: predicted labels, same length
  * size_t num_classes: number of classes
  * const std::vector<std::string>& class_names: row names; empty means "0", "1", ...; otherwise one per class
- * int digits: decimals shown for the scores
+ * int digits: decimals shown for the scores, must be >= 0
  * float zero_division: value used when a denominator is zero
  *
- * Returns std::string: the report, ending with a newline; throws std::invalid_argument if class_names has the wrong size
+ * Returns std::string: the report, ending with a newline; throws std::invalid_argument if class_names has the wrong size or digits is negative; long class names widen the first column instead of being cut
  */
 std::string classification_report(const std::vector<size_t>& y_true, const std::vector<size_t>& y_pred,
                                   size_t num_classes, const std::vector<std::string>& class_names = {},

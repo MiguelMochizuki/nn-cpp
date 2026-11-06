@@ -44,6 +44,7 @@ float score(const std::vector<size_t>& y_true, const std::vector<size_t>& y_pred
             Average average, float zero_division, Which which) {
 	if (average == Average::Micro) {
 		check_pair(y_true, y_pred, num_classes);
+		if (y_true.empty()) return zero_division;
 		// every wrong prediction is one false positive and one false negative, so all three coincide
 		return accuracy_score(y_true, y_pred);
 	}
@@ -58,7 +59,10 @@ std::vector<size_t> to_labels(const Tensor& ids) {
 	std::vector<size_t> out(ids.size());
 	for (size_t i = 0; i < out.size(); i++) {
 		const float v = ids.data()[i];
-		if (!(v >= 0.0f) || v != std::floor(v)) throw std::invalid_argument("to_labels: not a non-negative integer");
+		// the upper bound keeps the cast below defined (it also rejects inf and NaN)
+		if (!(v >= 0.0f) || !(v < 4294967296.0f) || v != std::floor(v)) {
+			throw std::invalid_argument("to_labels: not a non-negative integer below 2^32");
+		}
 		out[i] = static_cast<size_t>(v);
 	}
 	return out;
@@ -138,6 +142,7 @@ std::string classification_report(const std::vector<size_t>& y_true, const std::
 	if (!class_names.empty() && class_names.size() != num_classes) {
 		throw std::invalid_argument("classification_report: class_names must have one entry per class");
 	}
+	if (digits < 0) throw std::invalid_argument("classification_report: digits must be >= 0");
 	const ClassScores s = precision_recall_f1(y_true, y_pred, num_classes, zero_division);
 	std::vector<std::string> names(num_classes);
 	size_t width = std::string("weighted avg").size();
@@ -149,20 +154,22 @@ std::string classification_report(const std::vector<size_t>& y_true, const std::
 	for (size_t n : s.support) total += n;
 
 	std::string out;
-	char buf[256];
+	// names are padded by hand, so only the numbers go through snprintf; a float prints at most ~48 chars before its decimals
+	std::vector<char> buf(static_cast<size_t>(digits) * 3 + 256);
+	auto pad = [&](const std::string& name) { return std::string(width - name.size(), ' ') + name; };
 	auto row = [&](const std::string& name, float p, float r, float f, size_t n) {
-		std::snprintf(buf, sizeof buf, "%*s  %9.*f %9.*f %9.*f %9zu\n", static_cast<int>(width), name.c_str(), digits, p,
-		              digits, r, digits, f, n);
-		out += buf;
+		out += pad(name);
+		std::snprintf(buf.data(), buf.size(), "  %9.*f %9.*f %9.*f %9zu\n", digits, p, digits, r, digits, f, n);
+		out += buf.data();
 	};
-	std::snprintf(buf, sizeof buf, "%*s  %9s %9s %9s %9s\n\n", static_cast<int>(width), "", "precision", "recall",
-	              "f1-score", "support");
-	out += buf;
+	out += pad("");
+	std::snprintf(buf.data(), buf.size(), "  %9s %9s %9s %9s\n\n", "precision", "recall", "f1-score", "support");
+	out += buf.data();
 	for (size_t c = 0; c < num_classes; c++) row(names[c], s.precision[c], s.recall[c], s.f1[c], s.support[c]);
 	out += "\n";
-	std::snprintf(buf, sizeof buf, "%*s  %20s%9.*f %9zu\n", static_cast<int>(width), "accuracy", "", digits,
-	              accuracy_score(y_true, y_pred), total);
-	out += buf;
+	out += pad("accuracy");
+	std::snprintf(buf.data(), buf.size(), "  %20s%9.*f %9zu\n", "", digits, accuracy_score(y_true, y_pred), total);
+	out += buf.data();
 	row("macro avg", combine(s.precision, s.support, Average::Macro), combine(s.recall, s.support, Average::Macro),
 	    combine(s.f1, s.support, Average::Macro), total);
 	row("weighted avg", combine(s.precision, s.support, Average::Weighted),
