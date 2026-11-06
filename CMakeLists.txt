@@ -34,6 +34,7 @@ add_library(nn_core STATIC
 	src/optim/adam.cpp
 	src/optim/adamw.cpp
 	src/optim/scheduler.cpp
+	src/optim/plateau.cpp
 	src/optim/clip.cpp
 	src/metrics.cpp
 	src/data/dataloader.cpp
