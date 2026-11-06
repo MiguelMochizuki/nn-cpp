@@ -24,7 +24,9 @@ namespace nn {
  * bool shuffle_: whether to reshuffle sample order each epoch
  * bool drop_last_: whether a final batch smaller than batch_size_ is skipped
  * vector<size_t> indices_: current sample order
- * mt19937 rng_: random engine used when shuffle_ is true
+ * vector<double> cumulative_: running sums of the sample weights; empty unless the loader is weighted
+ * size_t num_samples_: samples per epoch (the dataset size unless the loader is weighted)
+ * mt19937 rng_: random engine used when shuffle_ is true or the loader is weighted
  */
 class DataLoader {
 public:
@@ -51,16 +53,34 @@ public:
 	 */
 	DataLoader(const Dataset& dataset, size_t batch_size, bool shuffle, bool drop_last);
 
+	/* Public, construct a loader that draws each epoch's samples at random with the given weights,
+	 * with replacement (like PyTorch's WeightedRandomSampler). A sample with twice the weight is
+	 * drawn twice as often; the draws are portable, so a seed gives the same epoch on every platform.
+	 *
+	 * Parameters:
+	 * const Dataset& dataset: data to iterate; must outlive this DataLoader
+	 * size_t batch_size: samples per batch
+	 * const std::vector<double>& sample_weights: one non-negative weight per dataset sample, not all zero
+	 * size_t num_samples: samples drawn per epoch; 0 means the dataset size
+	 * bool drop_last: skip the final batch if it has fewer than batch_size samples
+	 *
+	 * Returns DataLoader: none (constructor); throws std::invalid_argument for a wrong number of weights,
+	 * a negative or non-finite weight, or weights that sum to zero
+	 */
+	DataLoader(const Dataset& dataset, size_t batch_size, const std::vector<double>& sample_weights,
+	           size_t num_samples = 0, bool drop_last = false);
+
 	/* Public, number of batches per epoch, including a shorter final batch if the
-	 * dataset size isn't a multiple of batch_size
+	 * samples per epoch aren't a multiple of batch_size
 	 *
 	 * Parameters: none
 	 *
-	 * Returns size_t: ceil(dataset.size() / batch_size), or the floor when drop_last is set
+	 * Returns size_t: ceil(samples per epoch / batch_size), or the floor when drop_last is set
 	 */
 	size_t num_batches() const;
 
-	/* Public, reshuffle sample order; no-op if shuffle was disabled at construction
+	/* Public, reshuffle the sample order, or redraw the samples of a weighted loader; no-op for an unshuffled,
+	 * unweighted loader
 	 *
 	 * Parameters: none
 	 *
@@ -85,7 +105,21 @@ private:
 	bool shuffle_;
 	bool drop_last_;
 	std::vector<size_t> indices_;
+	std::vector<double> cumulative_;
+	size_t num_samples_;
 	std::mt19937 rng_;
 };
+
+/*
+ * Per-sample weights that make every class equally likely to be drawn by the weighted DataLoader:
+ * a sample of class c gets weight 1 / count(c).
+ *
+ * Parameters:
+ * const std::vector<size_t>& labels: class of every sample
+ * size_t num_classes: number of classes; every label must be below it
+ *
+ * Returns std::vector<double>: one weight per sample; throws std::invalid_argument for an out-of-range label
+ */
+std::vector<double> balanced_sample_weights(const std::vector<size_t>& labels, size_t num_classes);
 
 }  // namespace nn

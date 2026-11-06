@@ -60,6 +60,14 @@ public:
 	 */
 	std::vector<size_t> class_counts() const;
 
+	/* Public, emotion class of every sample in dataset order
+	 *
+	 * Parameters: none
+	 *
+	 * Returns vector<size_t>: one class (0-6) per sample; input for balanced_sample_weights
+	 */
+	std::vector<size_t> labels() const;
+
 private:
 	size_t image_size_;
 	std::vector<float> pixels_;

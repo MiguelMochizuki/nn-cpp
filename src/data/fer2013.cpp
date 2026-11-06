@@ -167,4 +167,10 @@ std::vector<size_t> Fer2013Dataset::class_counts() const {
 	return counts;
 }
 
+std::vector<size_t> Fer2013Dataset::labels() const {
+	std::vector<size_t> out(labels_.size());
+	for (size_t i = 0; i < out.size(); i++) out[i] = static_cast<size_t>(labels_[i]);
+	return out;
+}
+
 }  // namespace nn

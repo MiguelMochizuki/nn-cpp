@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -412,4 +413,74 @@ TEST_CASE("Fer2013Dataset errors carry the line number and reason") {
 	CHECK_THROWS_AS(Fer2013Dataset(no_cols.path.string()), std::runtime_error);
 	TempFile empty("fer_empty.csv", "");
 	CHECK_THROWS_AS(Fer2013Dataset(empty.path.string()), std::runtime_error);
+}
+
+TEST_CASE("a weighted loader draws samples in proportion to their weights") {
+	IndexEncodingDataset dataset(4);
+	std::vector<double> w = {1.0, 0.0, 3.0, 6.0};  // sample 1 must never appear
+	DataLoader loader(dataset, 50, w, 10000);
+	CHECK(loader.num_batches() == 200);
+	std::vector<size_t> hits(4, 0);
+	for (size_t b = 0; b < loader.num_batches(); b++) {
+		auto [x, y] = loader.get_batch(b);
+		for (float v : y.data()) hits[static_cast<size_t>(v)]++;
+	}
+	CHECK(hits[1] == 0);
+	CHECK(hits[0] + hits[2] + hits[3] == 10000);
+	CHECK(hits[0] == doctest::Approx(1000.0).epsilon(0.15));
+	CHECK(hits[2] == doctest::Approx(3000.0).epsilon(0.08));
+	CHECK(hits[3] == doctest::Approx(6000.0).epsilon(0.05));
+}
+
+TEST_CASE("a weighted loader defaults to one epoch of dataset.size() samples and repeats under a seed") {
+	IndexEncodingDataset dataset(7);
+	std::vector<double> w(7, 1.0);
+	auto epoch = [&](unsigned long long seed) {
+		manual_seed(seed);
+		DataLoader loader(dataset, 3, w);
+		CHECK(loader.num_batches() == 3);  // ceil(7 / 3)
+		std::vector<float> seen;
+		for (size_t b = 0; b < loader.num_batches(); b++) {
+			auto [x, y] = loader.get_batch(b);
+			for (float v : y.data()) seen.push_back(v);
+		}
+		CHECK(seen.size() == 7);
+		return seen;
+	};
+	CHECK(epoch(5) == epoch(5));
+	CHECK(epoch(5) != epoch(6));
+	DataLoader dropped(dataset, 3, w, 0, true);
+	CHECK(dropped.num_batches() == 2);
+}
+
+TEST_CASE("a weighted loader redraws on reset_epoch and rejects bad weights") {
+	IndexEncodingDataset dataset(50);
+	std::vector<double> w(50, 1.0);
+	DataLoader loader(dataset, 50, w);
+	auto first = loader.get_batch(0).second.data();
+	loader.reset_epoch();
+	CHECK(loader.get_batch(0).second.data() != first);
+	CHECK_THROWS_AS(DataLoader(dataset, 4, std::vector<double>(49, 1.0)), std::invalid_argument);
+	CHECK_THROWS_AS(DataLoader(dataset, 4, std::vector<double>(50, 0.0)), std::invalid_argument);
+	std::vector<double> neg(50, 1.0);
+	neg[3] = -1.0;
+	CHECK_THROWS_AS(DataLoader(dataset, 4, neg), std::invalid_argument);
+	neg[3] = std::numeric_limits<double>::infinity();
+	CHECK_THROWS_AS(DataLoader(dataset, 4, neg), std::invalid_argument);
+	CHECK_THROWS_AS(DataLoader(dataset, 0, w), TensorShapeError);
+}
+
+TEST_CASE("balanced_sample_weights equalise the classes") {
+	std::vector<size_t> labels = {0, 0, 0, 0, 1, 2, 2};
+	std::vector<double> w = balanced_sample_weights(labels, 4);  // class 3 is absent
+	CHECK(w[0] == doctest::Approx(0.25));
+	CHECK(w[4] == doctest::Approx(1.0));
+	CHECK(w[5] == doctest::Approx(0.5));
+	double per_class[3] = {0, 0, 0};
+	for (size_t i = 0; i < labels.size(); i++) per_class[labels[i]] += w[i];
+	CHECK(per_class[0] == doctest::Approx(1.0));
+	CHECK(per_class[1] == doctest::Approx(1.0));
+	CHECK(per_class[2] == doctest::Approx(1.0));
+	CHECK_THROWS_AS(balanced_sample_weights({0, 4}, 4), std::invalid_argument);
+	CHECK(balanced_sample_weights({}, 3).empty());
 }
