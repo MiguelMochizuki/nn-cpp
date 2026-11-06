@@ -67,6 +67,12 @@ public:
 	 */
 	void step(float metric);
 
+	/* Public, bad epochs counted since the last improvement or lr reduction
+	 *
+	 * Parameters: none
+	 *
+	 * Returns size_t: current bad-epoch count (held at 0 during cooldown)
+	 */
 	size_t num_bad_epochs() const { return bad_epochs_; }
 
 	/* Public, best metric so far

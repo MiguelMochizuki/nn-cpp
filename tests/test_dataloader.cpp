@@ -687,6 +687,43 @@ TEST_CASE("RandomErasing erases one axis-aligned rectangle of bounded area in ev
 	CHECK(fives == 16);  // area 14.7 -> 4 x 4
 }
 
+TEST_CASE("RandomErasing at ratio 1 erases about the requested area and moves the rectangle") {
+	Tensor ones({1, 33, 33}, 1.0f);
+	manual_seed(11);
+	RandomErasing erase(1.0f, 0.25f, 0.25f, 1.0f, 1.0f, -1.0f);
+	bool moved_y = false, moved_x = false;
+	for (int i = 0; i < 100; i++) {
+		Tensor y = erase(ones);
+		size_t count = 0, y0 = 33, x0 = 33;
+		for (size_t r = 0; r < 33; r++)
+			for (size_t q = 0; q < 33; q++)
+				if (y.data()[r * 33 + q] == -1.0f) {
+					count++;
+					y0 = std::min(y0, r);
+					x0 = std::min(x0, q);
+				}
+		CHECK(static_cast<double>(count) <= 0.25 * 1089 + 25);
+		CHECK(static_cast<double>(count) >= 0.25 * 1089 - 25);
+		if (y0 > 0) moved_y = true;
+		if (x0 > 0) moved_x = true;
+	}
+	CHECK(moved_y);
+	CHECK(moved_x);
+}
+
+TEST_CASE("RandomErasing draws the same numbers whether or not an attempt fits") {
+	// 1x1 samples almost never fit a rectangle (h or w rounds to 0); 33x33 samples fit.
+	// If the draw count depended on that, the second call on the same sample would differ.
+	Tensor tiny({1, 1, 1}, 1.0f), big = index_image({1, 33, 33});
+	manual_seed(12);
+	RandomErasing a(1.0f, 0.02f, 0.02f);
+	manual_seed(12);
+	RandomErasing b(1.0f, 0.02f, 0.02f);
+	a(tiny);
+	b(big);
+	CHECK(a(big).data() == b(big).data());
+}
+
 TEST_CASE("RandomErasing handles tiny images, is repeatable and validates arguments") {
 	manual_seed(9);
 	RandomErasing erase(1.0f, 0.02f, 1.0f, 0.3f, 3.3f, -1.0f);
@@ -709,5 +746,8 @@ TEST_CASE("RandomErasing handles tiny images, is repeatable and validates argume
 	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 2.0f, 1.0f), std::invalid_argument);
 	CHECK_THROWS_AS(RandomErasing(std::nanf("")), std::invalid_argument);
 	CHECK_THROWS_AS(RandomErasing(0.5f, std::nanf("")), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 0.3f, std::nanf("")), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 3.0f, 2.0f), std::invalid_argument);
+	CHECK_NOTHROW(RandomErasing(0.5f, 0.2f, 0.2f));
 	CHECK_THROWS_AS(erase(Tensor({4, 5}, 0.0f)), TensorShapeError);
 }

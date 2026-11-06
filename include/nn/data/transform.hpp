@@ -221,7 +221,8 @@ private:
 /*
  * With probability p, sets one random rectangle of a {C,H,W} sample to a constant in every
  * channel. Up to 10 placement attempts each draw a target area fraction uniform in
- * [min_area, max_area] and an aspect ratio h/w log-uniform in [min_ratio, max_ratio], giving
+ * [min_area, max_area] (up to rounding of h and w, the erased area can exceed max_area * H * W by a few
+ * pixels at extreme ratios) and an aspect ratio h/w log-uniform in [min_ratio, max_ratio], giving
  * h = round(sqrt(area * ratio)) and w = round(sqrt(area / ratio)) with area = fraction * H * W;
  * the first attempt with 1 <= h <= H and 1 <= w <= W is placed uniformly inside the image. If
  * none fits the sample is returned unchanged. Every call draws the same 41 numbers (the

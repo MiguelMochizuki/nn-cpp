@@ -117,6 +117,36 @@ TEST_CASE("SGD weight decay shrinks a zero-gradient parameter by lr * wd * param
 	CHECK(p.data().get({0}) == doctest::Approx(2.0f - 0.5f * 0.1f * 2.0f));
 }
 
+TEST_CASE("SGD folds weight decay into the gradient before the velocity update") {
+	// lr 0.1, momentum 0.9, wd 0.2, raw gradient 0.5, p0 = 1:
+	// step 1: g = 0.5 + 0.2 * 1 = 0.7, v = 0.7, p = 1 - 0.07 = 0.93
+	// step 2: g = 0.5 + 0.2 * 0.93 = 0.686, v = 0.9 * 0.7 + 0.686 = 1.316, p = 0.93 - 0.1316 = 0.7984
+	// (decaying p after the velocity update instead would give a different p after step 1)
+	Value p = Value::leaf(Tensor({1}, 1.0f), true);
+	SGD optimizer({p}, 0.1f, 0.9f, false, 0.2f);
+	p.grad().at({0}) = 0.5f;
+	optimizer.step();
+	CHECK(p.data().get({0}) == doctest::Approx(0.93f));
+	p.grad().at({0}) = 0.5f;
+	optimizer.step();
+	CHECK(p.data().get({0}) == doctest::Approx(0.7984f));
+}
+
+TEST_CASE("SGD Nesterov folds weight decay into the gradient before the velocity update") {
+	// lr 0.1, momentum 0.9, wd 0.2, raw gradient 0.5, p0 = 1:
+	// step 1: g = 0.7, v = 0.7, update = g + 0.9 * v = 1.33, p = 1 - 0.133 = 0.867
+	// step 2: g = 0.5 + 0.2 * 0.867 = 0.6734, v = 0.63 + 0.6734 = 1.3034,
+	//         update = 0.6734 + 0.9 * 1.3034 = 1.84646, p = 0.867 - 0.184646 = 0.682354
+	Value p = Value::leaf(Tensor({1}, 1.0f), true);
+	SGD optimizer({p}, 0.1f, 0.9f, true, 0.2f);
+	p.grad().at({0}) = 0.5f;
+	optimizer.step();
+	CHECK(p.data().get({0}) == doctest::Approx(0.867f));
+	p.grad().at({0}) = 0.5f;
+	optimizer.step();
+	CHECK(p.data().get({0}) == doctest::Approx(0.682354f));
+}
+
 TEST_CASE("SGD rejects Nesterov without momentum and negative weight decay") {
 	Value p = Value::leaf(Tensor({1}, 0.0f), true);
 	CHECK_THROWS_AS(SGD({p}, 0.1f, 0.0f, true), std::invalid_argument);

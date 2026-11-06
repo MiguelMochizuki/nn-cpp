@@ -1,7 +1,7 @@
 /**
  * sgd.hpp
  * Author: Miguel Mochizuki Silva
- * Description: Stochastic gradient descent with optional momentum
+ * Description: Stochastic gradient descent with optional (Nesterov) momentum and L2 weight decay
  */
 
 #pragma once
