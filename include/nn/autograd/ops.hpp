@@ -192,6 +192,18 @@ Value concat(const std::vector<Value>& xs, int axis);
  */
 std::vector<Value> split(const Value& x, int axis, size_t parts);
 
+/* Public, differentiable row lookup into an embedding table
+ *
+ * Parameters:
+ * Value weight: table of shape {V, D}
+ * Tensor ids: any shape, float-valued integers in [0, V)
+ *
+ * Returns Value: shape ids.shape() + {D}; backward scatter-adds each output row's gradient into the
+ * weight row of its id, serially, so repeated ids accumulate deterministically. Throws
+ * TensorShapeError if weight is not 2-D or an id is non-integral, negative, NaN or >= V
+ */
+Value embedding(const Value& weight, const Tensor& ids);
+
 /* Public, differentiable dimension permutation
  *
  * Parameters:

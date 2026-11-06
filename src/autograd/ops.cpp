@@ -1132,6 +1132,32 @@ Value mse_loss(const Value& predictions, const Value& targets) {
 Value operator+(const Value& a, const Value& b) { return add(a, b); }
 Value operator-(const Value& a, const Value& b) { return sub(a, b); }
 Value operator*(const Value& a, const Value& b) { return mul(a, b); }
+Value embedding(const Value& weight, const Tensor& ids) {
+	const std::vector<size_t>& ws = weight.data().shape();
+	if (ws.size() != 2) throw TensorShapeError();
+	size_t V = ws[0], D = ws[1];
+	const std::vector<float>& idv = ids.data();
+	std::vector<size_t> rows(idv.size());
+	for (size_t i = 0; i < idv.size(); i++) {
+		float f = idv[i];
+		if (!(f >= 0.0f) || f != std::floor(f) || f >= static_cast<float>(V)) throw TensorShapeError();
+		rows[i] = static_cast<size_t>(f);
+	}
+	std::vector<size_t> out_shape = ids.shape();
+	out_shape.push_back(D);
+	Tensor result(out_shape);
+	const float* w = weight.data().data().data();
+	float* out = result.data().data();
+	for (size_t i = 0; i < rows.size(); i++) std::copy(w + rows[i] * D, w + (rows[i] + 1) * D, out + i * D);
+	return Value::node(std::move(result), {weight}, [weight, rows, D](const Tensor& grad_out) {
+		if (!weight.requires_grad()) return;
+		float* g = weight.grad().data().data();
+		const float* go = grad_out.data().data();
+		for (size_t i = 0; i < rows.size(); i++)
+			for (size_t d = 0; d < D; d++) g[rows[i] * D + d] += go[i * D + d];
+	});
+}
+
 Value operator*(const Value& a, float scalar) { return scale(a, scalar); }
 Value operator*(float scalar, const Value& a) { return scale(a, scalar); }
 Value operator-(const Value& a) { return scale(a, -1.0f); }
