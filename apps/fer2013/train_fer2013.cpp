@@ -46,6 +46,7 @@ static void usage(const char* prog) {
 	std::fprintf(stderr, "  csv columns: emotion,pixels,Usage (Training rows train, PublicTest rows pick the best epoch,\n");
 	std::fprintf(stderr, "  PrivateTest rows give the final report)\n");
 	std::fprintf(stderr, "  --balance: sampler draws classes equally often (default), loss weights the loss by class\n");
+	std::fprintf(stderr, "  --out receives the best epoch by validation macro-F1, not the final model\n");
 	std::fprintf(stderr, "  defaults: --epochs 100 --batch 64 --lr 1e-3 --seed 1 --balance sampler --smoothing 0.1 --out fer2013.ckpt\n");
 }
 
@@ -115,7 +116,7 @@ static void predict(Sequential& model, DataLoader& loader, std::vector<size_t>& 
  * Returns int: 0 on success, 1 on bad usage, 2 on a runtime failure
  */
 int main(int argc, char** argv) {
-	std::setvbuf(stdout, nullptr, _IOLBF, 0);  // progress lines appear as they are printed, even into a file
+	std::setvbuf(stdout, nullptr, _IONBF, 0);  // unbuffered: progress lines appear as printed, even into a file (a sized _IOLBF is rejected on Windows)
 	if (argc < 2 || std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h") {
 		usage(argv[0]);
 		return 1;

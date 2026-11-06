@@ -50,8 +50,9 @@ On real MNIST (3 epochs, 8 threads) `train_mnist` reaches 98.58% test accuracy i
 | **Tensor** | N-D `float` arrays, broadcasting arithmetic, axis reductions, batched matmul |
 | **Layers** | `Linear`, `Conv2d` (stride, padding, dilation, groups), `MaxPool2d`, `AvgPool2d`, `GlobalAvgPool2d`, `BatchNorm1d/2d`, `Dropout`, `Flatten`, `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `Sequential` |
 | **Losses** | `cross_entropy_loss` (class weights, label smoothing), `mse_loss` |
-| **Optimization** | `SGD` (momentum), `Adam`, `AdamW`, `StepLR`, `CosineAnnealingLR`, `LinearWarmup`, `clip_grad_norm`, `clip_grad_value` |
-| **Data** | `Dataset`, `DataLoader`, `TensorDataset`, `random_split`, `Normalize`, `RandomHorizontalFlip`, `RandomShift`, FER-2013 CSV loader |
+| **Optimization** | `SGD` (momentum, Nesterov, weight decay), `Adam`, `AdamW`, `StepLR`, `CosineAnnealingLR`, `LinearWarmup`, `ReduceLROnPlateau`, `clip_grad_norm`, `clip_grad_value` |
+| **Data** | `Dataset`, `DataLoader`, `TensorDataset`, `random_split`, `Normalize`, `RandomHorizontalFlip`, `RandomShift`, `RandomCrop`, `RandomAffine`, `RandomErasing`, `ten_crop`, `ten_crop_batch`, weighted-sampling `DataLoader` with `balanced_sample_weights`, FER-2013 CSV loader |
+| **Metrics** | `confusion_matrix`, `precision_score` / `recall_score` / `f1_score` (micro, macro, weighted), `classification_report` |
 | **Reproducibility** | `manual_seed`, an independent stream per component, portable shuffling |
 | **Persistence** | `save_checkpoint` / `load_checkpoint`: weights, buffers and optimizer state, validated before anything is modified |
 
@@ -75,7 +76,7 @@ ctest --test-dir build --output-on-failure
 Each [release](https://github.com/MiguelMochizuki/nn-cpp/releases) ships the static library, headers and apps as a CMake install prefix:
 
 ```cmake
-find_package(nn_cpp 1.1 REQUIRED)    # CMAKE_PREFIX_PATH = the unpacked package
+find_package(nn_cpp 1.2 REQUIRED)    # CMAKE_PREFIX_PATH = the unpacked package
 target_link_libraries(my_app PRIVATE nn::core)
 ```
 

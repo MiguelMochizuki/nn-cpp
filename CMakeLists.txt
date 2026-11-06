@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(nn_cpp VERSION 1.1.0 LANGUAGES CXX)
+project(nn_cpp VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,6 +34,7 @@ add_library(nn_core STATIC
 	src/optim/adam.cpp
 	src/optim/adamw.cpp
 	src/optim/scheduler.cpp
+	src/optim/plateau.cpp
 	src/optim/clip.cpp
 	src/metrics.cpp
 	src/data/dataloader.cpp

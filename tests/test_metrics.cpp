@@ -8,6 +8,8 @@
 
 #include "nn/metrics.hpp"
 
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -108,4 +110,28 @@ TEST_CASE("classification_report reproduces the scikit-learn layout") {
 	    "   macro avg       0.50      0.56      0.49         5\n"
 	    "weighted avg       0.70      0.60      0.61         5\n";
 	CHECK(r == expected);
+}
+
+TEST_CASE("to_labels rejects non-finite and oversized values") {
+	CHECK_THROWS_AS(to_labels(Tensor({1}, std::vector<float>{std::numeric_limits<float>::infinity()})), std::invalid_argument);
+	CHECK_THROWS_AS(to_labels(Tensor({1}, std::vector<float>{std::nanf("")})), std::invalid_argument);
+	CHECK_THROWS_AS(to_labels(Tensor({1}, std::vector<float>{1e30f})), std::invalid_argument);
+}
+
+TEST_CASE("Micro average of empty input is zero_division, like Macro") {
+	CHECK(precision_score({}, {}, 2, Average::Micro, 0.5f) == 0.5f);
+	CHECK(recall_score({}, {}, 2, Average::Micro, 0.5f) == 0.5f);
+	CHECK(f1_score({}, {}, 2, Average::Micro, 0.5f) == 0.5f);
+	CHECK(f1_score({}, {}, 2, Average::Macro, 0.5f) == 0.5f);
+	CHECK(f1_score({}, {}, 2, Average::Micro) == 0.0f);
+}
+
+TEST_CASE("classification_report keeps long class names and rejects negative digits") {
+	const std::string longname(300, 'x');
+	std::string r = classification_report({0, 1}, {0, 1}, 2, {longname, "b"});
+	CHECK(r.find(longname + "       1.00") != std::string::npos);
+	CHECK(r.find("weighted avg") != std::string::npos);
+	CHECK(r.rfind('\n') == r.size() - 1);
+	CHECK_THROWS_AS(classification_report({0}, {0}, 1, {}, -1), std::invalid_argument);
+	CHECK(classification_report({0}, {0}, 1, {}, 40).find(std::string("1.") + std::string(40, '0')) != std::string::npos);
 }

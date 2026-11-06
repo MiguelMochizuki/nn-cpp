@@ -13,11 +13,13 @@
 #include "nn/random.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <type_traits>
 
 using namespace nn;
 
@@ -483,4 +485,301 @@ TEST_CASE("balanced_sample_weights equalise the classes") {
 	CHECK(per_class[2] == doctest::Approx(1.0));
 	CHECK_THROWS_AS(balanced_sample_weights({0, 4}, 4), std::invalid_argument);
 	CHECK(balanced_sample_weights({}, 3).empty());
+}
+
+namespace {
+
+Tensor index_image(std::vector<size_t> shape) {
+	Tensor t(shape, 0.0f);
+	for (size_t i = 0; i < t.size(); i++) t.data()[i] = static_cast<float>(i);
+	return t;
+}
+
+bool all_finite(const Tensor& t) {
+	for (float v : t.data())
+		if (!std::isfinite(v)) return false;
+	return true;
+}
+
+}  // namespace
+
+TEST_CASE("RandomCrop returns a contiguous window and validates the size") {
+	Tensor same = index_image({1, 7, 7});
+	CHECK(RandomCrop(7)(same).data() == same.data());
+	Tensor big = index_image({3, 33, 33});
+	manual_seed(4);
+	RandomCrop crop(7);
+	bool moved = false;
+	for (int i = 0; i < 20; i++) {
+		Tensor y = crop(big);
+		REQUIRE(y.shape() == std::vector<size_t>({3, 7, 7}));
+		// value = (c*33 + r)*33 + q, so the first element fixes the offset
+		size_t first = static_cast<size_t>(y.data()[0]);
+		size_t oy = (first / 33) % 33, ox = first % 33;
+		CHECK(oy + 7 <= 33);
+		CHECK(ox + 7 <= 33);
+		if (oy != 0 || ox != 0) moved = true;
+		for (size_t c = 0; c < 3; c++)
+			for (size_t r = 0; r < 7; r++)
+				for (size_t q = 0; q < 7; q++) CHECK(y.data()[(c * 7 + r) * 7 + q] == big.data()[(c * 33 + oy + r) * 33 + ox + q]);
+	}
+	CHECK(moved);
+	CHECK_THROWS_AS(RandomCrop(8)(same), std::invalid_argument);
+	CHECK_THROWS_AS(RandomCrop(0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomCrop(3)(Tensor({5, 5}, 0.0f)), TensorShapeError);
+	manual_seed(5);
+	Tensor a = RandomCrop(7)(big);
+	manual_seed(5);
+	Tensor b = RandomCrop(7)(big);
+	CHECK(a.data() == b.data());
+}
+
+TEST_CASE("RandomAffine is the identity for zero ranges or p = 0") {
+	for (auto shape : {std::vector<size_t>{1, 7, 7}, {3, 33, 33}, {1, 1, 1}}) {
+		Tensor x = index_image(shape);
+		CHECK(RandomAffine(0, 0, 0, 1.0f)(x).data() == x.data());
+		CHECK(RandomAffine(30, 0.5f, 0.5f, 0.0f)(x).data() == x.data());
+	}
+}
+
+TEST_CASE("RandomAffine translates, rotates and scales with bilinear zero-fill") {
+	Tensor dot({1, 9, 9}, 0.0f);
+	dot.data()[4 * 9 + 4] = 1.0f;
+	manual_seed(2);
+	RandomAffine shift(0, 0.5f, 0, 1.0f);
+	int changed = 0, up = 0, down = 0, left = 0, right = 0;
+	for (int i = 0; i < 200; i++) {
+		Tensor y = shift(dot);
+		int nonzero = 0;
+		float mass = 0.0f, my = 0.0f, mx = 0.0f;
+		for (size_t k = 0; k < y.size(); k++) {
+			float v = y.data()[k];
+			if (v != 0.0f) nonzero++;
+			mass += v;
+			my += v * static_cast<float>(k / 9);
+			mx += v * static_cast<float>(k % 9);
+			CHECK(v >= 0.0f);
+		}
+		CHECK(nonzero <= 4);
+		CHECK(mass <= 1.0f + 1e-5f);
+		if (y.data() != dot.data()) changed++;
+		// a fully inside dot keeps unit mass, and its centre of mass is the translation
+		if (mass > 0.999f) {
+			if (my / mass < 3.999f) up++;
+			if (my / mass > 4.001f) down++;
+			if (mx / mass < 3.999f) left++;
+			if (mx / mass > 4.001f) right++;
+		}
+	}
+	CHECK(changed > 150);
+	CHECK(up > 20);
+	CHECK(down > 20);
+	CHECK(left > 20);
+	CHECK(right > 20);
+	Tensor ones({1, 33, 33}, 1.0f);
+	RandomAffine rot(10, 0, 0, 1.0f);
+	manual_seed(3);
+	for (int i = 0; i < 10; i++) {
+		Tensor y = rot(ones);
+		CHECK(y.data()[16 * 33 + 16] == doctest::Approx(1.0f));
+		for (float v : y.data()) {
+			CHECK(v >= 0.0f);
+			CHECK(v <= 1.0f + 1e-5f);
+		}
+	}
+	// extreme settings (large shift, shrink) keep values finite, tiny image included
+	RandomAffine wild(180, 1.0f, 0.9f, 1.0f);
+	for (int i = 0; i < 20; i++) {
+		CHECK(all_finite(wild(ones)));
+		CHECK(all_finite(wild(Tensor({1, 1, 1}, 1.0f))));
+	}
+	manual_seed(6);
+	Tensor a = RandomAffine(15, 0.1f, 0.1f)(ones);
+	manual_seed(6);
+	Tensor b = RandomAffine(15, 0.1f, 0.1f)(ones);
+	CHECK(a.data() == b.data());
+	CHECK_THROWS_AS(RandomAffine(-1, 0, 0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(std::numeric_limits<float>::infinity(), 0, 0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(std::nanf(""), 0, 0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(0, 1.5f, 0), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(0, 0, 1.0f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomAffine(0, 0, 0, 2.0f), std::invalid_argument);
+	CHECK_THROWS_AS(shift(Tensor({4, 5}, 0.0f)), TensorShapeError);
+}
+
+TEST_CASE("ten_crop returns the four corners and centre then their mirrors") {
+	Tensor x = index_image({1, 5, 5});
+	auto crops = ten_crop(x, 3);
+	REQUIRE(crops.size() == 10);
+	auto window = [&](size_t oy, size_t ox, bool mirror) {
+		std::vector<float> v;
+		for (size_t r = 0; r < 3; r++)
+			for (size_t q = 0; q < 3; q++) v.push_back(x.data()[(oy + r) * 5 + ox + (mirror ? 2 - q : q)]);
+		return v;
+	};
+	size_t offs[5][2] = {{0, 0}, {0, 2}, {2, 0}, {2, 2}, {1, 1}};
+	for (size_t i = 0; i < 5; i++) {
+		CHECK(crops[i].shape() == std::vector<size_t>({1, 3, 3}));
+		CHECK(crops[i].data() == window(offs[i][0], offs[i][1], false));
+		CHECK(crops[i + 5].data() == window(offs[i][0], offs[i][1], true));
+	}
+	CHECK(crops[0].data() == std::vector<float>({0, 1, 2, 5, 6, 7, 10, 11, 12}));
+	CHECK(crops[4].data() == std::vector<float>({6, 7, 8, 11, 12, 13, 16, 17, 18}));
+	CHECK_THROWS_AS(ten_crop(x, 6), std::invalid_argument);
+	CHECK_THROWS_AS(ten_crop(x, 0), std::invalid_argument);
+	CHECK_THROWS_AS(ten_crop(Tensor({5, 5}, 0.0f), 3), TensorShapeError);
+}
+
+TEST_CASE("ten_crop_batch stacks ten_crop per sample") {
+	Tensor batch = index_image({2, 1, 5, 5});
+	auto views = ten_crop_batch(batch, 3);
+	REQUIRE(views.size() == 10);
+	for (size_t n = 0; n < 2; n++) {
+		Tensor sample({1, 5, 5}, std::vector<float>(batch.data().begin() + n * 25, batch.data().begin() + (n + 1) * 25));
+		auto expect = ten_crop(sample, 3);
+		for (size_t v = 0; v < 10; v++) {
+			CHECK(views[v].shape() == std::vector<size_t>({2, 1, 3, 3}));
+			CHECK(std::vector<float>(views[v].data().begin() + n * 9, views[v].data().begin() + (n + 1) * 9) == expect[v].data());
+		}
+	}
+	CHECK_THROWS_AS(ten_crop_batch(batch, 6), std::invalid_argument);
+	CHECK_THROWS_AS(ten_crop_batch(batch, 0), std::invalid_argument);
+}
+
+TEST_CASE("RandomErasing p = 0 leaves the sample unchanged") {
+	Tensor x = index_image({1, 33, 33});
+	RandomErasing erase(0.0f);
+	for (int i = 0; i < 20; i++) CHECK(erase(x).data() == x.data());
+}
+
+TEST_CASE("RandomErasing erases one axis-aligned rectangle of bounded area in every channel") {
+	Tensor ones({1, 33, 33}, 1.0f);
+	manual_seed(8);
+	RandomErasing erase(1.0f, 0.25f, 0.25f, 0.3f, 3.3f, -1.0f);
+	int erased_draws = 0;
+	for (int i = 0; i < 200; i++) {
+		Tensor y = erase(ones);
+		size_t count = 0, y0 = 33, y1 = 0, x0 = 33, x1 = 0;
+		for (size_t r = 0; r < 33; r++)
+			for (size_t q = 0; q < 33; q++)
+				if (y.data()[r * 33 + q] == -1.0f) {
+					count++;
+					y0 = std::min(y0, r);
+					y1 = std::max(y1, r);
+					x0 = std::min(x0, q);
+					x1 = std::max(x1, q);
+				}
+		CHECK(static_cast<double>(count) <= 0.25 * 33 * 33 + 40);
+		if (count == 0) continue;
+		erased_draws++;
+		CHECK(count == (y1 - y0 + 1) * (x1 - x0 + 1));  // the bounding box is fully erased
+	}
+	CHECK(erased_draws > 100);
+
+	Tensor rgb({3, 7, 7}, 1.0f);
+	RandomErasing all(1.0f, 0.3f, 0.3f, 1.0f, 1.0f, 5.0f);
+	Tensor z = all(rgb);
+	size_t fives = 0;
+	for (size_t i = 0; i < 49; i++) {
+		CHECK(z.data()[49 + i] == z.data()[i]);
+		CHECK(z.data()[98 + i] == z.data()[i]);
+		if (z.data()[i] == 5.0f) fives++;
+	}
+	CHECK(fives == 16);  // area 14.7 -> 4 x 4
+}
+
+TEST_CASE("RandomErasing at ratio 1 erases about the requested area and moves the rectangle") {
+	Tensor ones({1, 33, 33}, 1.0f);
+	manual_seed(11);
+	RandomErasing erase(1.0f, 0.25f, 0.25f, 1.0f, 1.0f, -1.0f);
+	bool moved_y = false, moved_x = false;
+	for (int i = 0; i < 100; i++) {
+		Tensor y = erase(ones);
+		size_t count = 0, y0 = 33, x0 = 33;
+		for (size_t r = 0; r < 33; r++)
+			for (size_t q = 0; q < 33; q++)
+				if (y.data()[r * 33 + q] == -1.0f) {
+					count++;
+					y0 = std::min(y0, r);
+					x0 = std::min(x0, q);
+				}
+		CHECK(static_cast<double>(count) <= 0.25 * 1089 + 25);
+		CHECK(static_cast<double>(count) >= 0.25 * 1089 - 25);
+		if (y0 > 0) moved_y = true;
+		if (x0 > 0) moved_x = true;
+	}
+	CHECK(moved_y);
+	CHECK(moved_x);
+}
+
+TEST_CASE("RandomErasing draws the same numbers whether or not an attempt fits") {
+	// 1x1 samples almost never fit a rectangle (h or w rounds to 0); 33x33 samples fit.
+	// If the draw count depended on that, the second call on the same sample would differ.
+	Tensor tiny({1, 1, 1}, 1.0f), big = index_image({1, 33, 33});
+	manual_seed(12);
+	RandomErasing a(1.0f, 0.02f, 0.02f);
+	manual_seed(12);
+	RandomErasing b(1.0f, 0.02f, 0.02f);
+	a(tiny);
+	b(big);
+	CHECK(a(big).data() == b(big).data());
+}
+
+TEST_CASE("RandomErasing handles tiny images, is repeatable and validates arguments") {
+	manual_seed(9);
+	RandomErasing erase(1.0f, 0.02f, 1.0f, 0.3f, 3.3f, -1.0f);
+	for (int i = 0; i < 100; i++) {
+		CHECK(erase(Tensor({1, 1, 1}, 1.0f)).size() == 1);
+		CHECK(erase(Tensor({1, 7, 7}, 1.0f)).size() == 49);
+	}
+	Tensor big = index_image({3, 33, 33});
+	manual_seed(10);
+	Tensor a = RandomErasing(0.7f)(big);
+	manual_seed(10);
+	Tensor b = RandomErasing(0.7f)(big);
+	CHECK(a.data() == b.data());
+	CHECK_THROWS_AS(RandomErasing(-0.1f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(1.1f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.0f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.4f, 0.3f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 1.5f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 0.0f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 2.0f, 1.0f), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(std::nanf("")), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, std::nanf("")), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 0.3f, std::nanf("")), std::invalid_argument);
+	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 3.0f, 2.0f), std::invalid_argument);
+	CHECK_NOTHROW(RandomErasing(0.5f, 0.2f, 0.2f));
+	CHECK_THROWS_AS(erase(Tensor({4, 5}, 0.0f)), TensorShapeError);
+}
+
+// A bool in the num_samples slot is a misplaced drop_last; the deleted overload makes it a compile error
+static_assert(!std::is_constructible<DataLoader, const Dataset&, size_t, const std::vector<double>&, bool>::value,
+              "a bool must not bind to num_samples");
+static_assert(std::is_constructible<DataLoader, const Dataset&, size_t, const std::vector<double>&, int>::value,
+              "an integer num_samples must still work");
+static_assert(std::is_constructible<DataLoader, const Dataset&, size_t, const std::vector<double>&, size_t, bool>::value,
+              "num_samples with drop_last must still work");
+static_assert(std::is_constructible<DataLoader, const Dataset&, size_t, bool>::value, "unweighted shuffle form");
+static_assert(std::is_constructible<DataLoader, const Dataset&, size_t, bool, bool>::value, "unweighted drop_last form");
+
+TEST_CASE("weighted draws under manual_seed(1) match the pinned golden sequence") {
+	IndexEncodingDataset dataset(5);
+	std::vector<double> w = {1, 2, 3, 0, 4};
+	manual_seed(1);
+	DataLoader loader(dataset, 8, w, 8);
+	std::vector<float> got = loader.get_batch(0).second.data();
+	std::vector<float> golden = {2, 1, 0, 0, 1, 4, 2, 2};
+	CHECK(got == golden);
+}
+
+TEST_CASE("a trailing zero weight is never drawn") {
+	IndexEncodingDataset dataset(2);
+	std::vector<double> w = {1, 0};
+	manual_seed(3);
+	DataLoader loader(dataset, 100, w, 1000);
+	for (size_t b = 0; b < loader.num_batches(); b++) {
+		auto batch = loader.get_batch(b);
+		for (float v : batch.second.data()) CHECK(v == 0.0f);
+	}
 }

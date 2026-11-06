@@ -1,5 +1,8 @@
 add_executable(xor_demo xor/xor_demo.cpp)
 target_link_libraries(xor_demo PRIVATE nn_core)
+if(NN_BUILD_TESTS)
+	add_test(NAME xor_demo_runs COMMAND xor_demo)
+endif()
 
 include(fer2013/CMakeLists.txt)
 

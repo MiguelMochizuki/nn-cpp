@@ -34,7 +34,7 @@ using namespace nn;
  * Returns int: 0 on success, 1 on bad usage
  */
 int main(int argc, char** argv) {
-	std::setvbuf(stdout, nullptr, _IOLBF, 0);  // progress lines appear as they are printed, even into a file
+	std::setvbuf(stdout, nullptr, _IONBF, 0);  // unbuffered: progress lines appear as printed, even into a file (a sized _IOLBF is rejected on Windows)
 	if (argc < 2) {
 		std::fprintf(stderr, "usage: %s <mnist_dir>\n", argv[0]);
 		std::fprintf(stderr, "  mnist_dir must contain train-images-idx3-ubyte, train-labels-idx1-ubyte,\n");

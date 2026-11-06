@@ -21,7 +21,7 @@ using namespace nn;
  * Returns int: 0 on success
  */
 int main() {
-	std::setvbuf(stdout, nullptr, _IOLBF, 0);  // progress lines appear as they are printed, even into a file
+	std::setvbuf(stdout, nullptr, _IONBF, 0);  // unbuffered: progress lines appear as printed, even into a file (a sized _IOLBF is rejected on Windows)
 	Tensor x_data({4, 2}, std::vector<float>{0, 0, 0, 1, 1, 0, 1, 1});
 	Tensor y_data({4, 1}, std::vector<float>{0, 1, 1, 0});
 	Value x = Value::leaf(x_data, false);
