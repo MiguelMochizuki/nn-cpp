@@ -75,7 +75,7 @@ nn::TransformedDataset train_set(all, std::make_shared<nn::Compose>(std::move(st
 
 nn::SGD optimizer(model.parameters(), 0.05f, /*momentum=*/0.9f, /*nesterov=*/true, /*weight_decay=*/5e-4f);
 nn::ReduceLROnPlateau plateau(optimizer, nn::PlateauMode::Min, /*factor=*/0.5f, /*patience=*/3);
-// each epoch: train on train_set, then plateau.step(validation_loss);
+// each epoch: train on train_set, then plateau.step(validation_loss)
 
 model.eval();
 nn::NoGradGuard no_grad;                                                     // no graph while predicting
@@ -84,7 +84,7 @@ for (const nn::Tensor& view : nn::ten_crop_batch(images, 44))                // 
     probs = probs + nn::softmax(model.forward(nn::Value::leaf(view)), 1).data();
 ```
 
-`RandomCrop` and `RandomErasing` act on `{C,H,W}` samples. The ten views are the four corner crops and the centre crop plus their mirrors, so the test crop size must match the training crop. `ReduceLROnPlateau.step` takes the epoch's metric (use `PlateauMode::Max` for an accuracy or F1); `weight_decay` in `SGD` is L2 added to the gradient, as in PyTorch. Compiled and run against a small synthetic dataset before release.
+`RandomCrop` and `RandomErasing` act on `{C,H,W}` samples. The ten views are the four corner crops and the centre crop plus their mirrors, so the test crop size must match the training crop. `ReduceLROnPlateau::step` takes the epoch's metric (use `PlateauMode::Max` for an accuracy or F1); `weight_decay` in `SGD` is L2 added to the gradient, as in PyTorch.
 
 ## Training on FER-2013
 
