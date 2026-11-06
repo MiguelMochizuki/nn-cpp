@@ -35,14 +35,18 @@ Value MultiHeadAttention::attend(const Value& query, const Value& context, const
 	Value v = split_heads(v_.forward(context), Tk);
 
 	Value scores = scale(matmul_bt(q, k), 1.0f / std::sqrt(static_cast<float>(Dh)));
-	if (causal_ || padded) {
-		Tensor mask = Tensor::zeros({N, 1, Tq, Tk});
-		for (size_t n = 0; n < N; n++)
-			for (size_t i = 0; i < Tq; i++)
-				for (size_t j = 0; j < Tk; j++)
-					if ((causal_ && j > i) || (padded && key_padding_mask.data()[n * Tk + j] == 0.0f))
-						mask.data()[(n * Tq + i) * Tk + j] = 1.0f;
+	// padding at -1e9, causal at the lower -2e9: a row whose visible keys are all padded still
+	// averages only over its causally visible keys and never reaches the future
+	if (padded) {
+		Tensor mask = Tensor::zeros({N, 1, 1, Tk});
+		for (size_t e = 0; e < N * Tk; e++) mask.data()[e] = key_padding_mask.data()[e] == 0.0f ? 1.0f : 0.0f;
 		scores = masked_fill(scores, mask, -1e9f);
+	}
+	if (causal_) {
+		Tensor mask = Tensor::zeros({1, 1, Tq, Tk});
+		for (size_t i = 0; i < Tq; i++)
+			for (size_t j = i + 1; j < Tk; j++) mask.data()[i * Tk + j] = 1.0f;
+		scores = masked_fill(scores, mask, -2e9f);
 	}
 	Value weights = drop_.forward(softmax(scores, 3));
 	Value merged = transpose(matmul(weights, v), {0, 2, 1, 3});

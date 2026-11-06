@@ -14,9 +14,10 @@ namespace nn {
 
 /*
  * Multi-head attention over {N, T, D} sequences, composed from differentiable ops only.
- * Scores are softmax(Q K^T / sqrt(D / heads)) per head. Masked scores are replaced by -1e9
- * before the softmax, so a query row whose keys are all masked yields the uniform average of
- * V (finite, never NaN).
+ * Scores are softmax(Q K^T / sqrt(D / heads)) per head. Padded keys are scored -1e9 and
+ * causally hidden keys -2e9 before the softmax. A query row with no real key visible averages
+ * V uniformly over its causally visible keys (all keys when not causal); never NaN, and a
+ * causal row never reads the future.
  *
  * Attributes:
  * size_t dim_: model width D
@@ -57,7 +58,7 @@ public:
 	 * the default zero-element Tensor({0}) means no padding. Padded keys get zero weight
 	 *
 	 * Returns Value: shape {N, Tq, D}. Throws TensorShapeError on bad shapes, or if causal
-	 * and Tq != Tk. A row with all keys masked averages V uniformly
+	 * and Tq != Tk. A row with no real visible key averages V uniformly over its visible keys
 	 */
 	Value attend(const Value& query, const Value& context, const Tensor& key_padding_mask = Tensor({0}));
 

@@ -119,6 +119,15 @@ TEST_CASE("positional encoding sinusoidal and learned") {
 
 namespace {
 Value rand_leaf(std::vector<size_t> s, bool rg = false) { return Value::leaf(Tensor::random(s, -1.0f, 1.0f), rg); }
+void set_identity(MultiHeadAttention& m) {
+	size_t D = 4;
+	for (size_t i = 0; i < 4; i++) {
+		Tensor w = Tensor::zeros({D, D});
+		for (size_t d = 0; d < D; d++) w.data()[d * D + d] = 1.0f;
+		m.parameters()[2 * i].data() = w;
+		m.parameters()[2 * i + 1].data() = Tensor::zeros({D});
+	}
+}
 }  // namespace
 
 TEST_CASE("attention single head matches hand reference") {
@@ -181,6 +190,63 @@ TEST_CASE("attention key padding has no influence, and fully masked rows are fin
 	Tensor none({2, 4}, std::vector<float>{0, 0, 0, 0, 1, 1, 1, 1});
 	Value y = a.attend(xv, xv, none);
 	for (float f : y.data().data()) CHECK(std::isfinite(f));
+
+	// identity projections: a fully masked row is exactly the mean of V
+	MultiHeadAttention id(4, 2);
+	set_identity(id);
+	Value yi = id.attend(xv, xv, none);
+	for (size_t t = 0; t < 4; t++)
+		for (size_t c = 0; c < 4; c++) {
+			float m = 0;
+			for (size_t j = 0; j < 4; j++) m += x.data()[j * 4 + c] / 4;
+			CHECK(yi.data().data()[t * 4 + c] == doctest::Approx(m).epsilon(1e-5));
+		}
+	CHECK_THROWS_AS(a.attend(xv, xv, Tensor({2, 5})), TensorShapeError);
+	CHECK_THROWS_AS(a.attend(xv, xv, Tensor({2})), TensorShapeError);
+}
+
+TEST_CASE("attention heads=2 matches per-head reference and differs from heads=1") {
+	MultiHeadAttention a(4, 2), one(4, 1);
+	set_identity(a);
+	set_identity(one);
+	std::vector<float> x = {1, 0.5f, -1, 2, 0, 1, 1, -0.5f, 2, 1, 0.5f, 0};
+	Value in = Value::leaf(Tensor({1, 3, 4}, x), false);
+	Value y = a.forward(in), y1 = one.forward(in);
+	for (size_t h = 0; h < 2; h++)
+		for (size_t i = 0; i < 3; i++) {
+			float sc[3], z = 0;
+			for (size_t j = 0; j < 3; j++) {
+				sc[j] = (x[i * 4 + h * 2] * x[j * 4 + h * 2] + x[i * 4 + h * 2 + 1] * x[j * 4 + h * 2 + 1]) / std::sqrt(2.0f);
+				sc[j] = std::exp(sc[j]);
+				z += sc[j];
+			}
+			for (size_t c = 0; c < 2; c++) {
+				float ref = 0;
+				for (size_t j = 0; j < 3; j++) ref += sc[j] / z * x[j * 4 + h * 2 + c];
+				CHECK(y.data().data()[i * 4 + h * 2 + c] == doctest::Approx(ref).epsilon(1e-5));
+			}
+		}
+	bool differs = false;
+	for (size_t e = 0; e < 12; e++) differs = differs || std::abs(y.data().data()[e] - y1.data().data()[e]) > 1e-4f;
+	CHECK(differs);
+}
+
+TEST_CASE("attention causal plus padding never reads the future") {
+	MultiHeadAttention a(4, 2, true);
+	Tensor x = Tensor::random({2, 4, 4}, -1.0f, 1.0f);
+	Tensor mask({2, 4}, std::vector<float>{0, 0, 1, 1, 1, 1, 1, 1});
+	// batch 0 rows 0 and 1 see only padded keys; perturb positions >= 2 (future for them)
+	Tensor x2 = x;
+	for (size_t e = 8; e < 16; e++) x2.data()[e] += 0.7f;
+	Value y1 = a.attend(Value::leaf(x, false), Value::leaf(x, false), mask);
+	Value y2 = a.attend(Value::leaf(x2, false), Value::leaf(x2, false), mask);
+	// rows 0..1 depend on their own query too, which is unperturbed
+	bool same = true;
+	for (size_t e = 0; e < 8; e++) same = same && (y1.data().data()[e] == y2.data().data()[e]);
+	CHECK(same);
+	bool differs = false;
+	for (size_t e = 8; e < 16; e++) differs = differs || (y1.data().data()[e] != y2.data().data()[e]);
+	CHECK(differs);
 }
 
 TEST_CASE("attention T=1 and shape errors") {
@@ -198,6 +264,8 @@ TEST_CASE("attention gradcheck on input and q.weight") {
 	Tensor w = Tensor::random({2, 3, 4}, 0.5f, 2.0f);
 	Value x = rand_leaf({2, 3, 4}, true);
 	CHECK(gradcheck([&](Value v) { return sum(mul(a.forward(v), Value::leaf(w, false))); }, x));
+	Tensor pad({2, 3}, std::vector<float>{1, 0, 1, 1, 1, 0});
+	CHECK(gradcheck([&](Value v) { return sum(mul(a.attend(v, v, pad), Value::leaf(w, false))); }, x));
 	Value qw = a.parameters()[0];
 	Value xf = rand_leaf({2, 3, 4});
 	CHECK(gradcheck([&](Value) {  // gradcheck perturbs qw in place, so a.forward sees it
