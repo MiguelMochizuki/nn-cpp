@@ -10,6 +10,7 @@
 #include "nn/autograd/value.hpp"
 
 #include <random>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -61,14 +62,27 @@ public:
 	 * const Dataset& dataset: data to iterate; must outlive this DataLoader
 	 * size_t batch_size: samples per batch
 	 * const std::vector<double>& sample_weights: one non-negative weight per dataset sample, not all zero
-	 * size_t num_samples: samples drawn per epoch; 0 means the dataset size
+	 * size_t num_samples: samples drawn per epoch, a count and not a flag; 0 means the dataset size
 	 * bool drop_last: skip the final batch if it has fewer than batch_size samples
 	 *
 	 * Returns DataLoader: none (constructor); throws std::invalid_argument for a wrong number of weights,
-	 * a negative or non-finite weight, or weights that sum to zero
+	 * a negative or non-finite weight, or weights that sum to zero. Passing a bool as num_samples (a mix-up
+	 * with the unweighted (dataset, batch_size, shuffle, drop_last) form) is rejected at compile time.
+	 * A single-element braced list such as {1.0} selects the bool overload instead; pass a named std::vector<double>.
 	 */
 	DataLoader(const Dataset& dataset, size_t batch_size, const std::vector<double>& sample_weights,
 	           size_t num_samples = 0, bool drop_last = false);
+
+	/* Public, deleted guard: a bool in the num_samples position is almost surely a misplaced drop_last
+	 *
+	 * Parameters:
+	 * const Dataset&, size_t, const std::vector<double>&: as the weighted constructor
+	 * T: deduced as bool, the only type this overload accepts
+	 *
+	 * Returns DataLoader: none; any use fails to compile
+	 */
+	template <class T, std::enable_if_t<std::is_same<T, bool>::value, int> = 0>
+	DataLoader(const Dataset&, size_t, const std::vector<double>&, T) = delete;
 
 	/* Public, number of batches per epoch, including a shorter final batch if the
 	 * samples per epoch aren't a multiple of batch_size

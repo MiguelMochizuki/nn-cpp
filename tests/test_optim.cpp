@@ -14,6 +14,8 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
+#include <vector>
 
 using namespace nn;
 
@@ -354,4 +356,16 @@ TEST_CASE("clip_grad_value clamps each element") {
 	p.grad() = Tensor({3}, std::vector<float>{-5.0f, 0.5f, 7.0f});
 	clip_grad_value({p}, 1.0f);
 	CHECK(p.grad().data() == std::vector<float>{-1.0f, 0.5f, 1.0f});
+}
+
+// A float in the nesterov slot is a misplaced weight_decay; the deleted overload makes it a compile error
+static_assert(!std::is_constructible<SGD, std::vector<Value>, float, float, float>::value,
+              "a float must not bind to nesterov");
+static_assert(std::is_constructible<SGD, std::vector<Value>, float, float, bool>::value, "nesterov form");
+static_assert(std::is_constructible<SGD, std::vector<Value>, float, float, bool, float>::value, "full form");
+
+TEST_CASE("SGD rejects a NaN weight_decay") {
+	Value p = Value::leaf(Tensor({1}, 1.0f), true);
+	CHECK_THROWS_AS(SGD({p}, 0.1f, 0.0f, false, std::nanf("")), std::invalid_argument);
+	CHECK_THROWS_AS(SGD({p}, 0.1f, 0.0f, false, -0.1f), std::invalid_argument);
 }

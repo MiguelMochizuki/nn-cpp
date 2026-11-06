@@ -50,7 +50,7 @@ void Optimizer::check_state(const OptimizerState& got, const OptimizerState& exp
 SGD::SGD(std::vector<Value> params, float lr, float momentum, bool nesterov, float weight_decay)
 	: Optimizer(std::move(params)), lr_(lr), momentum_(momentum), nesterov_(nesterov), weight_decay_(weight_decay) {
 	if (nesterov_ && momentum_ <= 0.0f) throw std::invalid_argument("SGD: nesterov requires momentum > 0");
-	if (weight_decay_ < 0.0f) throw std::invalid_argument("SGD: weight_decay must be >= 0");
+	if (!(weight_decay_ >= 0.0f)) throw std::invalid_argument("SGD: weight_decay must be >= 0");
 	velocity_.reserve(params_.size());
 	for (const Value& p : params_) {
 		velocity_.push_back(Tensor::zeros(p.data().shape()));

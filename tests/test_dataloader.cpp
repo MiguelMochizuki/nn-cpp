@@ -19,6 +19,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <type_traits>
 
 using namespace nn;
 
@@ -750,4 +751,35 @@ TEST_CASE("RandomErasing handles tiny images, is repeatable and validates argume
 	CHECK_THROWS_AS(RandomErasing(0.5f, 0.1f, 0.3f, 3.0f, 2.0f), std::invalid_argument);
 	CHECK_NOTHROW(RandomErasing(0.5f, 0.2f, 0.2f));
 	CHECK_THROWS_AS(erase(Tensor({4, 5}, 0.0f)), TensorShapeError);
+}
+
+// A bool in the num_samples slot is a misplaced drop_last; the deleted overload makes it a compile error
+static_assert(!std::is_constructible<DataLoader, const Dataset&, size_t, const std::vector<double>&, bool>::value,
+              "a bool must not bind to num_samples");
+static_assert(std::is_constructible<DataLoader, const Dataset&, size_t, const std::vector<double>&, int>::value,
+              "an integer num_samples must still work");
+static_assert(std::is_constructible<DataLoader, const Dataset&, size_t, const std::vector<double>&, size_t, bool>::value,
+              "num_samples with drop_last must still work");
+static_assert(std::is_constructible<DataLoader, const Dataset&, size_t, bool>::value, "unweighted shuffle form");
+static_assert(std::is_constructible<DataLoader, const Dataset&, size_t, bool, bool>::value, "unweighted drop_last form");
+
+TEST_CASE("weighted draws under manual_seed(1) match the pinned golden sequence") {
+	IndexEncodingDataset dataset(5);
+	std::vector<double> w = {1, 2, 3, 0, 4};
+	manual_seed(1);
+	DataLoader loader(dataset, 8, w, 8);
+	std::vector<float> got = loader.get_batch(0).second.data();
+	std::vector<float> golden = {2, 1, 0, 0, 1, 4, 2, 2};
+	CHECK(got == golden);
+}
+
+TEST_CASE("a trailing zero weight is never drawn") {
+	IndexEncodingDataset dataset(2);
+	std::vector<double> w = {1, 0};
+	manual_seed(3);
+	DataLoader loader(dataset, 100, w, 1000);
+	for (size_t b = 0; b < loader.num_batches(); b++) {
+		auto batch = loader.get_batch(b);
+		for (float v : batch.second.data()) CHECK(v == 0.0f);
+	}
 }

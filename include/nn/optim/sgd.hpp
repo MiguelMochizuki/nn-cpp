@@ -8,6 +8,8 @@
 
 #include "nn/optim/optimizer.hpp"
 
+#include <type_traits>
+
 namespace nn {
 
 /*
@@ -35,9 +37,21 @@ public:
 	 * bool nesterov: use Nesterov momentum, default false
 	 * float weight_decay: L2 coefficient added to every parameter's gradient, default 0
 	 *
-	 * Returns SGD: none (constructor); throws std::invalid_argument if nesterov is set with momentum <= 0 or weight_decay is negative
+	 * Returns SGD: none (constructor); throws std::invalid_argument if nesterov is set with momentum <= 0 or weight_decay is negative or NaN.
+	 * A floating-point 4th argument (SGD(p, lr, m, 5e-4f)) is rejected at compile time: it would silently mean nesterov.
 	 */
 	SGD(std::vector<Value> params, float lr, float momentum = 0.0f, bool nesterov = false, float weight_decay = 0.0f);
+
+	/* Public, deleted guard: a floating-point value in the nesterov position is almost surely a misplaced weight_decay
+	 *
+	 * Parameters:
+	 * vector<Value>, float, float: as the constructor above
+	 * T: deduced floating-point type of the 4th argument
+	 *
+	 * Returns SGD: none; any use fails to compile
+	 */
+	template <class T, std::enable_if_t<std::is_floating_point<T>::value, int> = 0>
+	SGD(std::vector<Value>, float, float, T) = delete;
 
 	/* Public, apply one update to every parameter from its current grad, updating velocity_ when momentum is on
 	 *
