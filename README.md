@@ -48,10 +48,10 @@ On real MNIST (3 epochs, 8 threads) `train_mnist` reaches 98.58% test accuracy i
 | | |
 |---|---|
 | **Tensor** | N-D `float` arrays, broadcasting arithmetic, axis reductions, batched matmul |
-| **Layers** | `Linear`, `Conv2d` (stride, padding, dilation, groups), `MaxPool2d`, `AvgPool2d`, `GlobalAvgPool2d`, `BatchNorm1d/2d`, `Dropout`, `Flatten`, `ReLU`, `Sigmoid`, `Tanh`, `Softmax`, `Sequential` |
+| **Layers** | `Linear`, `Embedding`, `LayerNorm`, `PositionalEncoding`, `MultiHeadAttention`, `TransformerBlock`, `Transformer`, `Conv2d` (stride, padding, dilation, groups), `MaxPool2d`, `AvgPool2d`, `GlobalAvgPool2d`, `BatchNorm1d/2d`, `Dropout`, `Flatten`, `ReLU`, `Sigmoid`, `Tanh`, `GELU`, `Softmax`, `Sequential` |
 | **Losses** | `cross_entropy_loss` (class weights, label smoothing), `sequence_cross_entropy` (ignore index), `mse_loss` |
 | **Optimization** | `SGD` (momentum, Nesterov, weight decay), `Adam`, `AdamW`, `StepLR`, `CosineAnnealingLR`, `LinearWarmup`, `ReduceLROnPlateau`, `clip_grad_norm`, `clip_grad_value` |
-| **Data** | `Dataset`, `DataLoader`, `TensorDataset`, `random_split`, `Normalize`, `RandomHorizontalFlip`, `RandomShift`, `RandomCrop`, `RandomAffine`, `RandomErasing`, `ten_crop`, `ten_crop_batch`, weighted-sampling `DataLoader` with `balanced_sample_weights`, FER-2013 CSV loader |
+| **Data** | `Dataset`, `CharVocab`, `SequenceDataset`, `DataLoader`, `TensorDataset`, `random_split`, `Normalize`, `RandomHorizontalFlip`, `RandomShift`, `RandomCrop`, `RandomAffine`, `RandomErasing`, `ten_crop`, `ten_crop_batch`, weighted-sampling `DataLoader` with `balanced_sample_weights`, FER-2013 CSV loader |
 | **Metrics** | `confusion_matrix`, `precision_score` / `recall_score` / `f1_score` (micro, macro, weighted), `classification_report` |
 | **Reproducibility** | `manual_seed`, an independent stream per component, portable shuffling |
 | **Persistence** | `save_checkpoint` / `load_checkpoint`: weights, buffers and optimizer state, validated before anything is modified |
@@ -67,6 +67,7 @@ ctest --test-dir build --output-on-failure
 ./build/apps/xor_demo                              # a 2-layer MLP learns XOR
 ./build/apps/train_mnist <dir-with-4-idx-files>    # CNN on MNIST (files not downloaded)
 ./build/apps/train_fer2013 <fer2013.csv>           # Conv-BN-ReLU network on FER-2013 (not downloaded)
+./build/apps/train_transformer --task copy         # a small Transformer learns a string task (no data needed)
 ```
 
 `-DNN_NATIVE=ON` builds for the host CPU (AVX2/FMA microkernel where available); `-DNN_BUILD_TESTS=OFF` and `-DNN_BUILD_APPS=OFF` skip those targets. The thread count defaults to the hardware's and is set with `NN_NUM_THREADS` or `nn::kernels::set_num_threads(n)`. x86 MSVC builds use the unpacked `sgemm`: correct, but slower than GCC/Clang.
@@ -76,7 +77,7 @@ ctest --test-dir build --output-on-failure
 Each [release](https://github.com/MiguelMochizuki/nn-cpp/releases) ships the static library, headers and apps as a CMake install prefix:
 
 ```cmake
-find_package(nn_cpp 1.2 REQUIRED)    # CMAKE_PREFIX_PATH = the unpacked package
+find_package(nn_cpp 1.3 REQUIRED)    # CMAKE_PREFIX_PATH = the unpacked package
 target_link_libraries(my_app PRIVATE nn::core)
 ```
 
@@ -86,7 +87,7 @@ A regularised CNN with a schedule, clipping and a validation split takes about 3
 
 | | |
 |---|---|
-| [Guide](docs/guide.md) | worked examples: regularisation and schedules, MNIST, FER-2013, resuming, custom data |
+| [Guide](docs/guide.md) | worked examples: regularisation and schedules, MNIST, FER-2013, a character-level Transformer, resuming, custom data |
 | [API reference](docs/api.md) | one row per header |
 | [Architecture](docs/architecture.md) | how autograd, convolution, the GEMM and the thread pool fit together; checkpoint format and limits |
 | [Performance](docs/performance/README.md) | benchmark method, per-phase reports, raw data |
@@ -99,7 +100,7 @@ A regularised CNN with a schedule, clipping and a validation split takes about 3
 ```
 include/nn/   public headers: tensor, autograd, nn, optim, data, kernels
 src/          implementations, mirroring include/nn
-apps/         xor_demo, mnist (train_mnist), fer2013 (train_fer2013), bench (harness)
+apps/         xor_demo, mnist (train_mnist), fer2013 (train_fer2013), transformer (train_transformer), bench (harness)
 tests/        doctest suite, gradient checks, a naive GEMM oracle
 docs/         guide, API, architecture, performance reports
 ```

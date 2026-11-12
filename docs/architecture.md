@@ -14,6 +14,8 @@ include/nn/
 │   ├── module.hpp          Module: base interface for layers
 │   ├── linear.hpp, conv2d.hpp, pool2d.hpp, flatten.hpp, activation.hpp
 │   ├── dropout.hpp, batchnorm.hpp
+│   ├── embedding.hpp, layernorm.hpp, positional.hpp, attention.hpp
+│   ├── transformer.hpp     TransformerBlock, Transformer, TransformerConfig
 │   ├── sequential.hpp      Sequential: chains layers together
 │   └── loss.hpp
 ├── optim/
@@ -23,7 +25,7 @@ include/nn/
 │   └── clip.hpp            clip_grad_norm, clip_grad_value
 ├── data/
 │   ├── dataset.hpp, dataloader.hpp
-│   └── tensor_dataset.hpp, subset.hpp, transform.hpp, fer2013.hpp
+│   └── tensor_dataset.hpp, subset.hpp, transform.hpp, fer2013.hpp, text.hpp
 └── kernels/
     ├── gemm.hpp            blocked sgemm: AVX2/FMA and SSE2 microkernels, unpacked loop elsewhere
     └── parallel.hpp        fork/join thread pool: parallel_for, parallel_range
@@ -40,6 +42,14 @@ Every layer's `forward()` is written only with these ops, so no layer defines a 
 ## Convolution
 
 `conv2d` is im2col plus the shared `matmul`: each convolution becomes one large matrix product (receptive fields unfolded into columns, multiplied by the reshaped filters). The same cache-blocked GEMM serves the forward pass and both gradients, with no separate convolution loop. Dilation and groups use a general path; the default (`groups == 1`, `dilation == 1`) keeps the original one.
+
+## Attention
+
+`MultiHeadAttention` has no attention kernel of its own. It projects the input with four `Linear` layers, cuts the query, key and value into heads with `reshape` and `transpose`, scores with `matmul_bt` (so `K^T` is never materialised), scales by `1 / sqrt(D / heads)`, applies `masked_fill`, `softmax` and attention-weight `Dropout`, multiplies by V with `matmul`, merges the heads again and applies the output `Linear`. `LayerNorm` is `mean`, `sub`, `mul`, `add` and `rsqrt` followed by the learnable scale and shift; `Embedding` uses the `embedding` op, whose backward scatter-adds serially so repeated ids accumulate deterministically. Every one of them therefore gets its gradient from the existing ops and is covered by their gradient checks.
+
+Masks use two fill values before the softmax: padded keys are set to -1e9 and causally hidden keys to -2e9. Because the causal value is lower, a query row whose real keys are all padded still gives the future exactly zero weight and averages V uniformly over its visible (non-future) keys, instead of reading the future or producing NaN. The headers document this as the behaviour of `MultiHeadAttention::attend`.
+
+Nothing is fused. Every step above materialises its result and has its own backward closure. The `transformer_tiny` bench workload (vocabulary 64, width 64, 4 heads, 2 layers, batch 16 x 64 tokens, AdamW) takes a median of 60.7 ms per step on the native build and 73.4 ms on the portable one (3 runs, 8 threads); about 44% of a step is forward, 55% backward and 0.6% the optimizer. That is all the measurement says. `perf` was unavailable on the measuring machine (`perf_event_paranoid=4`), so there is no per-op profile and it is not known which ops dominate. A fused attention, softmax or LayerNorm is a possible follow-up only after profiling shows where the time goes. See the [performance notes](performance/README.md#v130-transformer_tiny-and-the-v120-guard).
 
 ## Performance kernels
 

@@ -97,6 +97,94 @@ for (const nn::Tensor& view : nn::ten_crop_batch(images, 44))                // 
 
 Defaults are `--epochs 100 --batch 64 --lr 1e-3 --seed 1 --balance sampler --smoothing 0.1 --out fer2013.ckpt`. `--balance sampler` draws the classes equally often with a weighted `DataLoader` (`balanced_sample_weights`); `loss` weights the loss by class instead. One epoch takes about 3.5 minutes on 8 threads of an i5-12450HX. The `cnn_fer` row of `apps/bench` times one step of a smaller network of the same kind.
 
+## A character-level Transformer
+
+`Transformer` (`nn/nn/transformer.hpp`) maps float token ids `{N, T}` to logits `{N, T, vocab}`: an `Embedding`, a `PositionalEncoding`, pre-norm `TransformerBlock`s, a final `LayerNorm` and a `Linear` head. `TransformerConfig` is `{vocab_size, dim, heads, layers, max_len}` plus `mlp_ratio = 4`, `dropout = 0`, `causal = true` and `learned_positions = false`. `sequence_cross_entropy(logits, targets)` is the matching loss; targets equal to `ignore_index` (default -100) contribute nothing, which lets a task score only its answer.
+
+The program below teaches the model to copy: each sample is six letters, `=`, and the same six letters. Only the second half is scored, so the model has to read the first half to get any of it right. It is tested (compiled against `build/native` and run, 300 steps of batch 32, about 6 seconds):
+
+```cpp
+#include "nn/autograd/ops.hpp"
+#include "nn/data/text.hpp"
+#include "nn/nn/transformer.hpp"
+#include "nn/optim/adamw.hpp"
+#include "nn/optim/clip.hpp"
+#include "nn/random.hpp"
+
+#include <cstdio>
+#include <random>
+
+using namespace nn;
+
+// "abcdef=abcdef": 6 random letters, '=', the same letters again.
+static std::string sample(std::mt19937& rng) {
+    std::string w;
+    for (int i = 0; i < 6; i++) w += static_cast<char>('a' + rng() % 26);
+    return w + "=" + w;
+}
+
+int main() {
+    manual_seed(1);
+    std::mt19937 rng(7);
+    CharVocab vocab("abcdefghijklmnopqrstuvwxyz=");
+    const size_t T = 12;                                    // 13 characters, input drops the last
+    Transformer model(TransformerConfig{vocab.size(), 32, 4, 2, T});   // dim 32, 4 heads, 2 layers, causal
+    AdamW opt(model.parameters(), 3e-3f);
+
+    for (int step = 1; step <= 300; step++) {
+        const size_t n = 32;
+        Tensor x({n, T}), y({n, T});
+        for (size_t i = 0; i < n; i++) {
+            std::vector<float> ids = vocab.encode(sample(rng));
+            for (size_t j = 0; j < T; j++) {
+                x.data()[i * T + j] = ids[j];
+                y.data()[i * T + j] = j < 6 ? -100.0f : ids[j + 1];   // loss only on the copied half
+            }
+        }
+        Value loss = sequence_cross_entropy(model.forward(Value::leaf(x)), y);
+        opt.zero_grad();
+        loss.backward();
+        clip_grad_norm(model.parameters(), 1.0f);
+        opt.step();
+        if (step % 50 == 0) std::printf("step %d loss %.4f\n", step, loss.data().get({0}));
+    }
+
+    // Greedy generation: feed "planet=" and let the model write the rest.
+    model.eval();
+    NoGradGuard no_grad;
+    std::string prompt = "planet=";
+    std::vector<float> seq = vocab.encode(prompt);
+    for (size_t len = seq.size(); len < 13; len++) {
+        Tensor x({1, len});
+        for (size_t j = 0; j < len; j++) x.data()[j] = seq[j];
+        Tensor logits = model.forward(Value::leaf(x)).data();
+        const float* row = &logits.data()[(len - 1) * vocab.size()];
+        size_t best = 0;
+        for (size_t c = 1; c < vocab.size(); c++) if (row[c] > row[best]) best = c;
+        seq.push_back(static_cast<float>(best));
+    }
+    std::printf("%s\n", vocab.decode(seq).c_str());
+}
+```
+
+```
+step 50 loss 3.2535
+step 100 loss 2.8261
+step 150 loss 0.1892
+step 200 loss 0.0158
+step 250 loss 0.0081
+step 300 loss 0.0054
+planet=planet
+```
+
+The loss falls sharply between steps 100 and 150, when the attention heads start looking back six positions. The last line is greedy generation: the prompt `planet=` goes in and the model writes the answer one token at a time, re-running on the growing prefix (no cache). `apps/transformer/train_transformer.cpp` is the fuller version with a warm-up and cosine schedule, held-out samples and an exact-match score:
+
+```bash
+./build/apps/train_transformer [--task reverse|copy|add] [--steps N] [--batch N] [--lr X] [--seed N] [--dim N] [--layers N]
+```
+
+Defaults are `--task reverse --steps 3000 --batch 64 --lr 3e-3 --seed 1 --dim 64 --layers 2` (4 heads). On the native build, `--task copy --steps 600` reached held-out accuracy 1.000 from step 200 (84 s) and the default reverse run reached 1.000 after 3000 steps (6 min 52 s). The `add` task was only smoke-run for 20 steps, so no accuracy is claimed for it. For real text, `CharVocab` (byte-level, so a multi-byte UTF-8 character is several symbols) and `SequenceDataset` (windows of `T` tokens with the target shifted by one) feed a `DataLoader` directly.
+
 ## Saving and resuming
 
 `save_checkpoint` writes a model's parameters and buffers, an optimizer's state (learning rate, momentum, velocity or Adam moments) and a step counter of your choosing to one file; `load_checkpoint` restores them.
