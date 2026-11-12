@@ -5,6 +5,7 @@ if(NN_BUILD_TESTS)
 endif()
 
 include(fer2013/CMakeLists.txt)
+include(transformer/CMakeLists.txt)
 
 add_executable(train_mnist
 	mnist/idx_dataset.cpp

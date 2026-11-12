@@ -1,0 +1,5 @@
+add_executable(train_transformer transformer/train_transformer.cpp)
+target_link_libraries(train_transformer PRIVATE nn_core)
+if(NN_BUILD_TESTS)
+	add_test(NAME train_transformer_runs COMMAND train_transformer --steps 20)
+endif()
