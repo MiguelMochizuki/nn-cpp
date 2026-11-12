@@ -18,6 +18,7 @@
 #include <exception>
 #include <memory>
 #include <random>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -176,8 +177,13 @@ int main(int argc, char** argv) {
 		const size_t warmup = steps / 10;
 		LinearWarmup sched(opt, std::make_unique<CosineAnnealingLR>(opt, steps - warmup > 0 ? steps - warmup : 1), warmup);
 
-		std::vector<std::string> held(200);
-		for (std::string& s : held) s = make_sample(task, rng);
+		// 200 distinct held-out samples; training rejects them (add has only 10000 pairs, so this matters there)
+		std::vector<std::string> held;
+		std::set<std::string> held_set;
+		while (held.size() < 200) {
+			std::string s = make_sample(task, rng);
+			if (held_set.insert(s).second) held.push_back(s);
+		}
 		std::printf("task %s  sample length %zu  vocab %zu  steps %zu  batch %zu\n", task.c_str(), len, vocab.size(), steps, batch);
 
 		const auto t_start = std::chrono::steady_clock::now();
@@ -185,7 +191,10 @@ int main(int argc, char** argv) {
 		for (size_t step = 1; step <= steps; step++) {
 			model.train();
 			std::vector<std::string> s(batch);
-			for (std::string& x : s) x = make_sample(task, rng);
+			for (std::string& x : s) {
+				do x = make_sample(task, rng);
+				while (held_set.count(x));
+			}
 			auto [x, y] = make_batch(vocab, s);
 			Value loss = sequence_cross_entropy(model.forward(Value::leaf(x)), y);
 			opt.zero_grad();
