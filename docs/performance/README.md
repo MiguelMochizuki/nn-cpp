@@ -20,7 +20,17 @@ Measurements behind the speedups quoted in the main README. Machine: Intel i5-12
 | native | 24.3 | 23.8 | 0.35 | 48.8 | 3% |
 | portable | 29.0 | 31.7 | 0.35 | 61.2 | 2% |
 
-Roughly half of a step is forward, half backward and under 1% the optimizer. There is no finer split: `apps/bench/profile.sh` could not run because `perf record` is not permitted on the measuring machine (`perf_event_paranoid=4`), so which ops dominate is unknown. Fused attention, softmax or LayerNorm ops are a possible follow-up only after a profile shows where the time goes.
+Roughly half of a step is forward, half backward and under 1% the optimizer. A `perf record` profile of the whole run (`apps/bench/profile.sh build/<native|portable> transformer_tiny <dir>`, `perf_event_paranoid=1`; raw output in [baseline/v1.3.0/](baseline/v1.3.0/)) shows no single dominant op. Shares as printed by `perf report`, native build, grouped by hand:
+
+| group | share | symbols |
+|---|---|---|
+| GEMM | about 14% | `micro_avx2` 10.5%, `blocked` 3.6% (portable: `micro_sse2` 21.5%) |
+| GELU | about 12% | `tanhf` 7.6%, the `gelu` forward and backward lambdas 4.2% |
+| `transpose` | about 7% | `Tensor::transpose` 7.2% |
+| allocation and copies | about 14% | `memset` 4.2%, `memmove` 2.8%, `malloc`, `free`, `operator new` and the `Tensor` constructor 7.2% |
+| other elementwise and reductions | about 18% | `Tensor::operator+=` 6.1%, `masked_fill` 5.4%, `Tensor::sum` 3.2%, `mul` 3.1% |
+
+Softmax and LayerNorm have no row of their own: they are composed of `exp`, `sum`, `mul` and `div`, so their cost is spread over the groups above and this profile does not isolate it. What it does show is that the matrix multiplies are a small part of a step, and that `tanhf`, `transpose`, `masked_fill` (a serial per-element loop) and allocation each cost about as much as the GEMM kernel's inner loop. Cheaper candidates than a fused attention are therefore a vectorised `gelu`, a cheaper `transpose` for the head split and merge, a parallel or row-wise `masked_fill`, and fewer temporaries. None of this is implemented; the profile is one run on one machine and the shares are approximate.
 
 **The guard run against v1.2.0 passes the 3% gate.** v1.2.0 and the 1.3.0 `main` were built side by side (native and portable) and run interleaved, 3 passes of `--runs 50 --warmup 5` per build. Medians of the 3 passes, new against old, total ms per step:
 
