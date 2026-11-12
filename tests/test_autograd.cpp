@@ -859,7 +859,7 @@ TEST_CASE("axis reductions on 1-D tensors and size-1 axes") {
 }
 
 TEST_CASE("axis sum, axis mean and rsqrt gradchecks") {
-	for (std::vector<size_t> shape : {std::vector<size_t>{1}, {7, 3}, {33, 5}, {257, 2}}) {
+	for (std::vector<size_t> shape : {std::vector<size_t>{1}, std::vector<size_t>{7, 3}, std::vector<size_t>{33, 5}, std::vector<size_t>{257, 2}}) {
 		for (int axis = 0; axis < static_cast<int>(shape.size()); axis++) {
 			for (bool keep : {false, true}) {
 				Value x = spread_leaf(shape);
@@ -1147,8 +1147,205 @@ TEST_CASE("weighted cross_entropy_loss rejects bad input") {
 	CHECK_THROWS_AS(cross_entropy_loss(logits, targets, Tensor({3}, std::vector<float>{0, 0, 1})), std::invalid_argument);
 }
 
+TEST_CASE("sequence_cross_entropy equals cross_entropy_loss when nothing is ignored") {
+	Tensor lv = Tensor::random({2, 3, 4}, -2.0f, 2.0f);
+	Tensor tg({2, 3}, std::vector<float>{0, 1, 2, 3, 3, 1});
+	Tensor flat_lv = lv.reshape({6, 4});
+	Tensor flat_tg = tg.reshape({6});
+	Value a = Value::leaf(lv, true), b = Value::leaf(flat_lv, true);
+	Value la = sequence_cross_entropy(a, tg), lb = cross_entropy_loss(b, flat_tg);
+	CHECK(la.data().data()[0] == doctest::Approx(lb.data().data()[0]).epsilon(1e-6));
+	// smoothing 0.1 against the weighted overload with unit weights
+	Value c = Value::leaf(lv, true), d = Value::leaf(flat_lv, true);
+	Value ls = sequence_cross_entropy(c, tg, -100, 0.1f), ld = cross_entropy_loss(d, flat_tg, Tensor({4}, 1.0f), 0.1f);
+	CHECK(ls.data().data()[0] == doctest::Approx(ld.data().data()[0]).epsilon(1e-6));
+	la.backward(); lb.backward(); ls.backward(); ld.backward();
+	for (size_t i = 0; i < lv.size(); i++) {
+		CHECK(a.grad().data()[i] == doctest::Approx(b.grad().data()[i]).epsilon(1e-5));
+		CHECK(c.grad().data()[i] == doctest::Approx(d.grad().data()[i]).epsilon(1e-5));
+	}
+}
+
+TEST_CASE("sequence_cross_entropy skips ignored positions") {
+	Tensor lv = Tensor::random({2, 3, 4}, -2.0f, 2.0f);
+	Tensor tg({2, 3}, std::vector<float>{0, -100, 2, 3, -100, 1});
+	Value x = Value::leaf(lv, true);
+	Value loss = sequence_cross_entropy(x, tg);
+	// reference: mean over the four kept positions via cross_entropy_loss
+	Tensor kl({4, 4}), kt({4});
+	size_t keep[4] = {0, 2, 3, 5};
+	for (size_t i = 0; i < 4; i++) {
+		for (size_t c = 0; c < 4; c++) kl.data()[i * 4 + c] = lv.data()[keep[i] * 4 + c];
+		kt.data()[i] = tg.data()[keep[i]];
+	}
+	Value ref = cross_entropy_loss(Value::leaf(kl, false), kt);
+	CHECK(loss.data().data()[0] == doctest::Approx(ref.data().data()[0]).epsilon(1e-6));
+	loss.backward();
+	for (size_t p : {size_t{1}, size_t{4}}) {
+		for (size_t c = 0; c < 4; c++) CHECK(x.grad().data()[p * 4 + c] == 0.0f);
+	}
+	// a custom ignore id works too
+	Tensor tg2 = tg;
+	for (float& v : tg2.data()) if (v == -100.0f) v = 7.0f;
+	CHECK(sequence_cross_entropy(Value::leaf(lv, false), tg2, 7).data().data()[0]
+		== doctest::Approx(ref.data().data()[0]).epsilon(1e-6));
+}
+
+TEST_CASE("sequence_cross_entropy gradcheck") {
+	for (auto shape : {std::vector<size_t>{1, 1, 3}, std::vector<size_t>{2, 5, 7}}) {
+		size_t P = shape[0] * shape[1], V = shape[2];
+		Tensor tg({shape[0], shape[1]});
+		for (size_t i = 0; i < P; i++) tg.data()[i] = (i % 4 == 3 && P > 1) ? -100.0f : static_cast<float>((i * 5) % V);
+		float count = 0.0f;
+		for (size_t i = 0; i < P; i++) count += tg.data()[i] != -100.0f ? 1.0f : 0.0f;
+		// scaled by the count of scored positions so the gradients are O(1) and the tolerance bites
+		auto f = [tg, count](Value l) { return mul(sequence_cross_entropy(l, tg, -100, 0.1f), Value::leaf(Tensor({1}, count), false)); };
+		Value x = Value::leaf(Tensor::random(shape, -2.0f, 2.0f), true);
+		CHECK(gradcheck(f, x, 1e-3f, 1e-2f));
+	}
+}
+
+TEST_CASE("sequence_cross_entropy rejects bad input") {
+	Value logits = Value::leaf(Tensor({1, 2, 3}, 0.0f), false);
+	CHECK_THROWS_AS(sequence_cross_entropy(logits, Tensor({2}, 0.0f)), TensorShapeError);
+	CHECK_THROWS_AS(sequence_cross_entropy(Value::leaf(Tensor({2, 3}, 0.0f), false), Tensor({2}, 0.0f)), TensorShapeError);
+	CHECK_THROWS_AS(sequence_cross_entropy(logits, Tensor({1, 2}, std::vector<float>{0, 3})), std::invalid_argument);
+	CHECK_THROWS_AS(sequence_cross_entropy(logits, Tensor({1, 2}, std::vector<float>{0, 1}), -100, 1.0f), std::invalid_argument);
+	CHECK_THROWS_AS(sequence_cross_entropy(logits, Tensor({1, 2}, std::vector<float>{-100, -100})), std::invalid_argument);
+}
+
 TEST_CASE("axis reductions over a zero-length axis throw") {
 	Value x = Value::leaf(Tensor({0, 3}, 0.0f), false);
 	CHECK_THROWS_AS(mean(x, 0), TensorShapeError);
 	CHECK_THROWS_AS(sum(x, 0), TensorShapeError);
+}
+
+TEST_CASE("exp log sqrt div gelu forward values") {
+	auto at = [](const Value& v) { return v.data().data()[0]; };
+	CHECK(at(exp(Value::leaf(Tensor({1}, 0.0f), false))) == doctest::Approx(1.0f));
+	CHECK(at(log(Value::leaf(Tensor({1}, 2.7182818f), false))) == doctest::Approx(1.0f));
+	CHECK(at(sqrt(Value::leaf(Tensor({1}, 4.0f), false))) == doctest::Approx(2.0f));
+	Value q = div(Value::leaf(Tensor({2}, std::vector<float>{2, 3}), false), Value::leaf(Tensor({1}, 2.0f), false));
+	CHECK(q.data().data()[0] == doctest::Approx(1.0f));
+	CHECK(q.data().data()[1] == doctest::Approx(1.5f));
+	CHECK(at(gelu(Value::leaf(Tensor({1}, 0.0f), false))) == doctest::Approx(0.0f));
+	CHECK(at(gelu(Value::leaf(Tensor({1}, 1.0f), false))) == doctest::Approx(0.841192f).epsilon(1e-4));
+	CHECK(at(gelu(Value::leaf(Tensor({1}, -1.0f), false))) == doctest::Approx(-0.158808f).epsilon(1e-4));
+}
+
+TEST_CASE("exp log sqrt gelu gradcheck") {
+	for (auto shape : {std::vector<size_t>{1}, std::vector<size_t>{7}, std::vector<size_t>{3, 5}}) {
+		Value x = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
+		CHECK(gradcheck([](Value v) { return sum(exp(v)); }, x));
+		CHECK(gradcheck([](Value v) { return sum(log(v)); }, x));
+		CHECK(gradcheck([](Value v) { return sum(sqrt(v)); }, x));
+		CHECK(gradcheck([](Value v) { return sum(gelu(v)); }, x));
+	}
+}
+
+TEST_CASE("div gradcheck both operands including broadcast") {
+	for (auto shape : {std::vector<size_t>{1}, std::vector<size_t>{7}, std::vector<size_t>{3, 5}}) {
+		Value a = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
+		Value b = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
+		CHECK(gradcheck([b](Value v) { return sum(div(v, b)); }, a));
+		CHECK(gradcheck([a](Value v) { return sum(div(a, v)); }, b));
+	}
+	Value a = Value::leaf(Tensor::random({3, 5}, 0.5f, 2.0f), true);
+	Value b = Value::leaf(Tensor::random({5}, 0.5f, 2.0f), true);
+	CHECK(gradcheck([b](Value v) { return sum(div(v, b)); }, a));
+	CHECK(gradcheck([a](Value v) { return sum(div(a, v)); }, b));
+}
+
+TEST_CASE("masked_fill forward and gradient") {
+	Value x = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6}), true);
+	Tensor mask({1, 3}, std::vector<float>{0, 1, 0});
+	Value y = masked_fill(x, mask, -1e9f);
+	const std::vector<float>& d = y.data().data();
+	CHECK(d[0] == 1.0f);
+	CHECK(d[1] == -1e9f);
+	CHECK(d[2] == 3.0f);
+	CHECK(d[4] == -1e9f);
+	sum(y).backward();
+	const std::vector<float>& g = x.grad().data();
+	CHECK(g == std::vector<float>{1, 0, 1, 1, 0, 1});
+	CHECK_THROWS_AS(masked_fill(x, Tensor({4}, 1.0f), 0.0f), TensorShapeError);
+	CHECK_THROWS_AS(masked_fill(x, Tensor({3, 2, 3}, 1.0f), 0.0f), TensorShapeError);
+}
+
+TEST_CASE("slice concat split forward and errors") {
+	Value x = Value::leaf(Tensor::random({2, 6}, -1.0f, 1.0f), false);
+	Value s = slice(x, 1, 2, 5);
+	CHECK(s.data().shape() == std::vector<size_t>{2, 3});
+	CHECK(s.data().data()[0] == x.data().data()[2]);
+	CHECK(s.data().data()[3] == x.data().data()[8]);
+	Value r = slice(x, -2, 1, 2);
+	CHECK(r.data().shape() == std::vector<size_t>{1, 6});
+	CHECK(r.data().data()[0] == x.data().data()[6]);
+	CHECK_THROWS_AS(slice(x, 1, 3, 3), TensorShapeError);
+	CHECK_THROWS_AS(slice(x, 1, 0, 7), TensorShapeError);
+	CHECK_THROWS_AS(slice(x, 2, 0, 1), TensorIndexError);
+
+	Value a = Value::leaf(Tensor::random({2, 3}, -1.0f, 1.0f), false);
+	Value b = Value::leaf(Tensor::random({2, 4}, -1.0f, 1.0f), false);
+	Value c = concat({a, b}, 1);
+	CHECK(c.data().shape() == std::vector<size_t>{2, 7});
+	Value parts = concat({a, b}, 1);
+	std::vector<Value> back = {slice(parts, 1, 0, 3), slice(parts, 1, 3, 7)};
+	CHECK(back[0].data().data() == a.data().data());
+	CHECK(back[1].data().data() == b.data().data());
+	std::vector<Value> halves = split(c, 0, 2);
+	CHECK(halves.size() == 2);
+	CHECK(halves[1].data().data()[0] == c.data().data()[7]);
+	CHECK_THROWS_AS(split(c, 1, 2), TensorShapeError);
+	CHECK_THROWS_AS(split(c, 1, 0), TensorShapeError);
+	CHECK_THROWS_AS(concat({}, 0), TensorShapeError);
+	CHECK_THROWS_AS(concat({a, b}, 0), TensorShapeError);
+}
+
+TEST_CASE("masked_fill slice concat split gradcheck") {
+	for (size_t n : {size_t(1), size_t(7), size_t(33)}) {
+		for (int ax : {0, 1, -1}) {
+			std::vector<size_t> shape = ax == 0 ? std::vector<size_t>{n, 3} : std::vector<size_t>{3, n};
+			size_t ai = ax == -1 ? 1 : static_cast<size_t>(ax);
+			size_t a = shape[ai];
+			Value x = Value::leaf(Tensor::random(shape, -1.0f, 1.0f), true);
+			Value w1 = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), false);
+
+			// Alternating 0/1 mask along the cut axis; broadcast over the other axis.
+			std::vector<float> flags(a);
+			for (size_t i = 0; i < a; i++) flags[i] = static_cast<float>(i % 2);
+			Tensor mask(ax == 0 ? std::vector<size_t>{a, 1} : std::vector<size_t>{a}, flags);
+			CHECK(gradcheck([&](Value v) { return sum(mul(masked_fill(v, mask, 3.0f), w1)); }, x));
+
+			size_t lo = a > 1 ? 1 : 0;
+			std::vector<size_t> ws = shape;
+			ws[ai] = a - lo;
+			Value w2 = Value::leaf(Tensor::random(ws, 0.5f, 2.0f), false);
+			CHECK(gradcheck([&](Value v) { return sum(mul(slice(v, ax, lo, a), w2)); }, x));
+
+			Value w3 = concat({w1, w1}, ax);
+			CHECK(gradcheck([&](Value v) { return sum(mul(concat({v, v}, ax), w3)); }, x));
+		}
+	}
+	// masked_fill with a real mask, weighted loss
+	Value x = Value::leaf(Tensor::random({4, 7}, -1.0f, 1.0f), true);
+	Tensor mask({1, 7}, std::vector<float>{0, 1, 0, 0, 1, 0, 1});
+	Tensor w = Tensor::random({4, 7}, 0.5f, 2.0f);
+	CHECK(gradcheck([&](Value v) { return sum(mul(masked_fill(v, mask, 3.0f), Value::leaf(w, false))); }, x));
+	// split: three parts of 33 along the cut axis, weighted differently per part
+	Value y = Value::leaf(Tensor::random({2, 33}, -1.0f, 1.0f), true);
+	Tensor wp = Tensor::random({2, 11}, 0.5f, 2.0f);
+	CHECK(gradcheck([&](Value v) {
+		std::vector<Value> p = split(v, 1, 3);
+		return sum(add(mul(p[0], Value::leaf(wp, false)), scale(mul(p[2], Value::leaf(wp, false)), 2.0f)));
+	}, y));
+}
+
+TEST_CASE("split inverts concat bit for bit and oversized mask dim is rejected") {
+	Value a = Value::leaf(Tensor::random({2, 5}, -1.0f, 1.0f), false);
+	std::vector<Value> halves = split(concat({a, a}, 1), 1, 2);
+	CHECK(halves[0].data().data() == a.data().data());
+	CHECK(halves[1].data().data() == a.data().data());
+	Value x = Value::leaf(Tensor({1, 3}, 1.0f), false);
+	CHECK_THROWS_AS(masked_fill(x, Tensor({2, 3}, 1.0f), 0.0f), TensorShapeError);
 }

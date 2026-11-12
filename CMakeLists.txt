@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(nn_cpp VERSION 1.2.0 LANGUAGES CXX)
+project(nn_cpp VERSION 1.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,6 +23,11 @@ add_library(nn_core STATIC
 	src/autograd/value.cpp
 	src/autograd/ops.cpp
 	src/nn/linear.cpp
+	src/nn/embedding.cpp
+	src/nn/layernorm.cpp
+	src/nn/attention.cpp
+	src/nn/transformer.cpp
+	src/nn/positional.cpp
 	src/nn/conv2d.cpp
 	src/nn/pool2d.cpp
 	src/nn/dropout.cpp
@@ -40,6 +45,7 @@ add_library(nn_core STATIC
 	src/data/dataloader.cpp
 	src/data/fer2013.cpp
 	src/data/subset.cpp
+	src/data/text.cpp
 	src/data/transform.cpp
 )
 
@@ -81,7 +87,7 @@ install(TARGETS nn_core EXPORT nn_cppTargets
 	ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY include/nn DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(NN_BUILD_APPS)
-	install(TARGETS xor_demo train_mnist train_fer2013 bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+	install(TARGETS xor_demo train_mnist train_fer2013 train_transformer bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 set(NN_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/nn_cpp)

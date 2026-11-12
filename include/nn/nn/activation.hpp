@@ -62,6 +62,23 @@ public:
 };
 
 /*
+ * Gaussian error linear unit activation (tanh approximation). No parameters.
+ *
+ * Attributes: none
+ */
+class GELU : public Module {
+public:
+	/* Public, apply GELU elementwise
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: activation output, same shape as input
+	 */
+	Value forward(const Value& input) override;
+};
+
+/*
  * Softmax activation along a fixed axis. No parameters.
  *
  * Attributes:

@@ -535,7 +535,7 @@ TEST_CASE("RandomCrop returns a contiguous window and validates the size") {
 }
 
 TEST_CASE("RandomAffine is the identity for zero ranges or p = 0") {
-	for (auto shape : {std::vector<size_t>{1, 7, 7}, {3, 33, 33}, {1, 1, 1}}) {
+	for (auto shape : {std::vector<size_t>{1, 7, 7}, std::vector<size_t>{3, 33, 33}, std::vector<size_t>{1, 1, 1}}) {
 		Tensor x = index_image(shape);
 		CHECK(RandomAffine(0, 0, 0, 1.0f)(x).data() == x.data());
 		CHECK(RandomAffine(30, 0.5f, 0.5f, 0.0f)(x).data() == x.data());

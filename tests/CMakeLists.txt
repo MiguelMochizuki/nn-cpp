@@ -3,8 +3,10 @@ add_executable(nn_tests
 	test_random.cpp
 	test_autograd.cpp
 	test_nn.cpp
+	test_transformer.cpp
 	test_optim.cpp
 	test_dataloader.cpp
+	test_text.cpp
 	test_metrics.cpp
 	test_plateau.cpp
 	test_checkpoint.cpp

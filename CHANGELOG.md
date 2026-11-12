@@ -3,6 +3,18 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-11-06
+
+Adds the pieces for a small decoder-only Transformer on character data. The public API of 1.2.0 is unchanged.
+
+### Added
+
+- Ops: `exp`, `log`, `sqrt`, `div`, `gelu` (tanh approximation), `masked_fill`, `slice`, `concat`, `split`, `embedding` and `sequence_cross_entropy` (mean over positions of a `{N, T, V}` logits tensor, with `ignore_index` and label smoothing). Each has a finite-difference gradient check.
+- Layers: `Embedding`, `LayerNorm`, `PositionalEncoding` (sinusoidal buffer or learned table), `MultiHeadAttention` (optional causal mask and key-padding mask, attention dropout), `GELU`, `TransformerBlock` (pre-norm) and `Transformer` configured by `TransformerConfig`. All are composed from existing differentiable ops, so none defines a backward pass.
+- `nn/data/text.hpp`: `CharVocab` (byte-level vocabulary) and `SequenceDataset` (sliding next-token windows).
+- `train_transformer`: trains a small Transformer on the generated `reverse`, `copy` or `add` string tasks and reports exact-match accuracy of greedy generation on held-out samples.
+- `transformer_tiny` workload in `apps/bench` (vocabulary 64, width 64, 4 heads, 2 layers, batch 16 x 64 tokens, AdamW).
+
 ## [1.2.0] - 2026-11-05
 
 ### Added

@@ -336,6 +336,232 @@ Value rsqrt(const Value& x) {
 	});
 }
 
+namespace {
+
+/**
+ * Builds a unary elementwise Value from a forward function and a derivative function
+ *
+ * Parameters:
+ * const Value& x: Operand
+ * F fwd: float -> float forward map
+ * D deriv: x -> dy/dx, given the input
+ *
+ * Returns Value: fwd(x) elementwise; backward multiplies grad_out by deriv
+ */
+template <typename F, typename D>
+Value unary_elementwise(const Value& x, F fwd, D deriv) {
+	Tensor result = x.data();
+	float* r = result.data().data();
+	kernels::parallel_range(result.size(), kElementwiseChunk, [r, fwd](size_t lo, size_t hi) {
+		for (size_t i = lo; i < hi; i++) r[i] = fwd(r[i]);
+	});
+	return Value::node(std::move(result), {x}, [x, deriv](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		const float* in = x.data().data().data();
+		const float* g = grad_out.data().data();
+		float* dst = x.grad().data().data();
+		kernels::parallel_range(grad_out.size(), kElementwiseChunk, [=](size_t lo, size_t hi) {
+			for (size_t i = lo; i < hi; i++) dst[i] += g[i] * deriv(in[i]);
+		});
+	});
+}
+
+}  // namespace
+
+Value exp(const Value& x) {
+	return unary_elementwise(x, [](float v) { return std::exp(v); }, [](float v) { return std::exp(v); });
+}
+
+Value log(const Value& x) {
+	return unary_elementwise(x, [](float v) { return std::log(v); }, [](float v) { return 1.0f / v; });
+}
+
+Value sqrt(const Value& x) {
+	return unary_elementwise(x, [](float v) { return std::sqrt(v); }, [](float v) { return 0.5f / std::sqrt(v); });
+}
+
+Value div(const Value& a, const Value& b) {
+	Tensor result = div(a.data(), b.data());
+	return Value::node(std::move(result), {a, b}, [a, b](const Tensor& grad_out) {
+		if (a.requires_grad()) accumulate_grad(a.grad(), div(grad_out, b.data()));
+		if (b.requires_grad()) {
+			Tensor q = div(mul(grad_out, a.data()), mul(b.data(), b.data()));
+			accumulate_grad(b.grad(), q, true);
+		}
+	});
+}
+
+Value gelu(const Value& x) {
+	const float k = 0.7978845608f;  // sqrt(2/pi)
+	const float c = 0.044715f;
+	return unary_elementwise(
+		x,
+		[k, c](float v) { return 0.5f * v * (1.0f + std::tanh(k * (v + c * v * v * v))); },
+		[k, c](float v) {
+			float t = std::tanh(k * (v + c * v * v * v));
+			return 0.5f * (1.0f + t) + 0.5f * v * (1.0f - t * t) * k * (1.0f + 3.0f * c * v * v);
+		});
+}
+
+namespace {
+
+/**
+ * Resolves a possibly negative axis and the outer/size/inner factorisation around it
+ *
+ * Parameters:
+ * const std::vector<size_t>& shape: Tensor shape
+ * int axis: Axis, negative counts from the end
+ * size_t& outer: Receives the product of dimensions before axis
+ * size_t& inner: Receives the product of dimensions after axis
+ *
+ * Returns size_t: the normalised axis; throws TensorIndexError if out of range
+ */
+size_t axis_split(const std::vector<size_t>& shape, int axis, size_t& outer, size_t& inner) {
+	int nd = static_cast<int>(shape.size());
+	if (axis < -nd || axis >= nd) throw TensorIndexError();
+	size_t ax = static_cast<size_t>(axis < 0 ? axis + nd : axis);
+	outer = inner = 1;
+	for (size_t i = 0; i < ax; i++) outer *= shape[i];
+	for (size_t i = ax + 1; i < shape.size(); i++) inner *= shape[i];
+	return ax;
+}
+
+/**
+ * Copies (or accumulates) a band of an axis between a wide and a narrow tensor
+ *
+ * Parameters:
+ * float* wide: Tensor with axis length wn
+ * float* narrow: Tensor with axis length nn
+ * size_t outer: Product of dimensions before the axis
+ * size_t inner: Product of dimensions after the axis
+ * size_t wn: Axis length of wide
+ * size_t nn: Axis length of narrow
+ * size_t offset: Where the band starts inside wide's axis
+ * bool to_narrow: true copies wide into narrow; false adds narrow into wide
+ *
+ * Returns void: each outer row is independent, so the result does not depend on the thread count
+ */
+void copy_band(float* wide, float* narrow, size_t outer, size_t inner, size_t wn, size_t nn, size_t offset,
+               bool to_narrow) {
+	size_t row = nn * inner;
+	kernels::parallel_range(outer, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, row)),
+	                        [=](size_t lo, size_t hi) {
+		for (size_t o = lo; o < hi; o++) {
+			float* w = wide + (o * wn + offset) * inner;
+			float* n = narrow + o * row;
+			if (to_narrow) for (size_t i = 0; i < row; i++) n[i] = w[i];
+			else for (size_t i = 0; i < row; i++) w[i] += n[i];
+		}
+	});
+}
+
+}  // namespace
+
+Value masked_fill(const Value& x, const Tensor& mask, float value) {
+	const std::vector<size_t>& xs = x.data().shape();
+	const std::vector<size_t>& ms = mask.shape();
+	if (ms.size() > xs.size()) throw TensorShapeError();
+	size_t lead = xs.size() - ms.size();
+	for (size_t i = 0; i < ms.size(); i++)
+		if (ms[i] != xs[lead + i] && ms[i] != 1) throw TensorShapeError();
+	// Expand the mask to one flag per element of x via zero strides on broadcast dims.
+	size_t total = x.data().size();
+	std::vector<size_t> mstride(xs.size(), 0);
+	size_t st = 1;
+	for (size_t i = ms.size(); i-- > 0;) {
+		mstride[lead + i] = ms[i] == 1 ? 0 : st;
+		st *= ms[i];
+	}
+	std::vector<char> hit(total);
+	const float* mp = mask.data().data();
+	for (size_t f = 0; f < total; f++) {
+		size_t rem = f, mi = 0;
+		for (size_t d = xs.size(); d-- > 0;) {
+			mi += (rem % xs[d]) * mstride[d];
+			rem /= xs[d];
+		}
+		hit[f] = mp[mi] != 0.0f;
+	}
+	Tensor result = x.data();
+	float* r = result.data().data();
+	for (size_t f = 0; f < total; f++)
+		if (hit[f]) r[f] = value;
+	return Value::node(std::move(result), {x}, [x, hit = std::move(hit)](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		const float* g = grad_out.data().data();
+		float* dx = x.grad().data().data();
+		for (size_t f = 0; f < hit.size(); f++)
+			if (!hit[f]) dx[f] += g[f];
+	});
+}
+
+Value slice(const Value& x, int axis, size_t start, size_t end) {
+	const std::vector<size_t>& shape = x.data().shape();
+	size_t outer, inner;
+	size_t ax = axis_split(shape, axis, outer, inner);
+	size_t n = shape[ax];
+	if (start >= end || end > n) throw TensorShapeError();
+	std::vector<size_t> out_shape = shape;
+	out_shape[ax] = end - start;
+	Tensor result(out_shape);
+	copy_band(const_cast<float*>(x.data().data().data()), result.data().data(), outer, inner, n, end - start, start,
+	          true);
+	return Value::node(std::move(result), {x}, [x, outer, inner, n, start, end](const Tensor& grad_out) {
+		if (!x.requires_grad()) return;
+		copy_band(x.grad().data().data(), const_cast<float*>(grad_out.data().data()), outer, inner, n, end - start,
+		          start, false);
+	});
+}
+
+Value concat(const std::vector<Value>& xs, int axis) {
+	if (xs.empty()) throw TensorShapeError();
+	const std::vector<size_t>& first = xs[0].data().shape();
+	size_t outer, inner;
+	size_t ax = axis_split(first, axis, outer, inner);
+	std::vector<size_t> out_shape = first;
+	out_shape[ax] = 0;
+	for (const Value& v : xs) {
+		const std::vector<size_t>& s = v.data().shape();
+		if (s.size() != first.size()) throw TensorShapeError();
+		for (size_t i = 0; i < s.size(); i++)
+			if (i != ax && s[i] != first[i]) throw TensorShapeError();
+		out_shape[ax] += s[ax];
+	}
+	size_t total_n = out_shape[ax];
+	Tensor result(out_shape);
+	size_t offset = 0;
+	for (const Value& v : xs) {
+		size_t n = v.data().shape()[ax];
+		copy_band(result.data().data(), const_cast<float*>(v.data().data().data()), outer, inner, total_n, n, offset,
+		          false);
+		offset += n;
+	}
+	return Value::node(std::move(result), xs, [xs, ax, outer, inner, total_n](const Tensor& grad_out) {
+		size_t off = 0;
+		for (const Value& v : xs) {
+			size_t n = v.data().shape()[ax];
+			if (v.requires_grad()) {
+				Tensor piece(v.data().shape());
+				copy_band(const_cast<float*>(grad_out.data().data()), piece.data().data(), outer, inner, total_n, n,
+				          off, true);
+				v.grad() += piece;
+			}
+			off += n;
+		}
+	});
+}
+
+std::vector<Value> split(const Value& x, int axis, size_t parts) {
+	const std::vector<size_t>& shape = x.data().shape();
+	size_t outer, inner;
+	size_t ax = axis_split(shape, axis, outer, inner);
+	if (parts == 0 || shape[ax] % parts != 0) throw TensorShapeError();
+	size_t w = shape[ax] / parts;
+	std::vector<Value> out;
+	for (size_t p = 0; p < parts; p++) out.push_back(slice(x, axis, p * w, (p + 1) * w));
+	return out;
+}
+
 Value transpose(const Value& x, std::vector<size_t> perm) {
 	Tensor result = x.data().transpose(perm);
 	std::vector<size_t> inverse(perm.size());
@@ -896,6 +1122,79 @@ Value cross_entropy_loss(const Value& logits, const Tensor& targets, const Tenso
 		});
 }
 
+Value sequence_cross_entropy(const Value& logits, const Tensor& targets, int ignore_index,
+	float label_smoothing) {
+	const Tensor& logits_data = logits.data();
+	if (logits_data.ndim() != 3) throw TensorShapeError();
+	size_t N = logits_data.shape()[0], T = logits_data.shape()[1], V = logits_data.shape()[2];
+	if (targets.ndim() != 2 || targets.shape()[0] != N || targets.shape()[1] != T) throw TensorShapeError();
+	if (!(label_smoothing >= 0.0f && label_smoothing < 1.0f)) {
+		throw std::invalid_argument("sequence_cross_entropy: label_smoothing must be in [0, 1)");
+	}
+	const size_t P = N * T;
+	// target_idx[p] == V marks an ignored position
+	std::vector<size_t> target_idx(P);
+	size_t count = 0;
+	for (size_t p = 0; p < P; p++) {
+		float t = std::round(targets.data()[p]);
+		if (t == static_cast<float>(ignore_index)) {
+			target_idx[p] = V;
+			continue;
+		}
+		if (!(t >= 0.0f && t < static_cast<float>(V))) {
+			throw std::invalid_argument("sequence_cross_entropy: target out of range");
+		}
+		target_idx[p] = static_cast<size_t>(t);
+		count++;
+	}
+	if (count == 0) throw std::invalid_argument("sequence_cross_entropy: every position is ignored");
+
+	Tensor softmax_val(logits_data.shape(), 0.0f);
+	std::vector<float> pos_loss(P, 0.0f);
+	const float inv_v = 1.0f / static_cast<float>(V);
+	kernels::parallel_range(P, std::max<size_t>(1, kElementwiseChunk / std::max<size_t>(1, V)),
+		[&](size_t lo, size_t hi) {
+			for (size_t p = lo; p < hi; p++) {
+				if (target_idx[p] == V) continue;
+				const float* row = logits_data.data().data() + p * V;
+				float* sm = softmax_val.data().data() + p * V;
+				float max_val = row[0];
+				for (size_t c = 1; c < V; c++) max_val = std::max(max_val, row[c]);
+				float sum_exp = 0.0f;
+				for (size_t c = 0; c < V; c++) sum_exp += std::exp(row[c] - max_val);
+				float log_sum_exp = std::log(sum_exp);
+				float mean_nll = 0.0f;
+				for (size_t c = 0; c < V; c++) {
+					float log_prob = row[c] - max_val - log_sum_exp;
+					sm[c] = std::exp(log_prob);
+					mean_nll -= log_prob * inv_v;
+				}
+				float nll = -(row[target_idx[p]] - max_val - log_sum_exp);
+				pos_loss[p] = (1.0f - label_smoothing) * nll + label_smoothing * mean_nll;
+			}
+		});
+	double total_loss = 0.0;  // serial, in position order: independent of thread count
+	for (size_t p = 0; p < P; p++) total_loss += pos_loss[p];
+
+	Tensor result({1}, static_cast<float>(total_loss / static_cast<double>(count)));
+	float inv_count = 1.0f / static_cast<float>(count);
+	return Value::node(std::move(result), {logits},
+		[logits, softmax_val, target_idx, P, V, label_smoothing, inv_count](const Tensor& grad_out) {
+			if (!logits.requires_grad()) return;
+			Tensor local_grad(softmax_val.shape(), 0.0f);
+			float g = grad_out.data()[0] * inv_count;
+			for (size_t p = 0; p < P; p++) {
+				if (target_idx[p] == V) continue;
+				const float* sm = softmax_val.data().data() + p * V;
+				float* row = local_grad.data().data() + p * V;
+				for (size_t c = 0; c < V; c++) row[c] = sm[c] - label_smoothing / static_cast<float>(V);
+				row[target_idx[p]] -= 1.0f - label_smoothing;
+				for (size_t c = 0; c < V; c++) row[c] *= g;
+			}
+			logits.grad() += local_grad;
+		});
+}
+
 Value mse_loss(const Value& predictions, const Value& targets) {
 	Value diff = sub(predictions, targets);
 	Value squared = mul(diff, diff);
@@ -906,6 +1205,32 @@ Value mse_loss(const Value& predictions, const Value& targets) {
 Value operator+(const Value& a, const Value& b) { return add(a, b); }
 Value operator-(const Value& a, const Value& b) { return sub(a, b); }
 Value operator*(const Value& a, const Value& b) { return mul(a, b); }
+Value embedding(const Value& weight, const Tensor& ids) {
+	const std::vector<size_t>& ws = weight.data().shape();
+	if (ws.size() != 2) throw TensorShapeError();
+	size_t V = ws[0], D = ws[1];
+	const std::vector<float>& idv = ids.data();
+	std::vector<size_t> rows(idv.size());
+	for (size_t i = 0; i < idv.size(); i++) {
+		float f = idv[i];
+		if (!(f >= 0.0f) || f != std::floor(f) || f >= static_cast<float>(V)) throw TensorShapeError();
+		rows[i] = static_cast<size_t>(f);
+	}
+	std::vector<size_t> out_shape = ids.shape();
+	out_shape.push_back(D);
+	Tensor result(out_shape);
+	const float* w = weight.data().data().data();
+	float* out = result.data().data();
+	for (size_t i = 0; i < rows.size(); i++) std::copy(w + rows[i] * D, w + (rows[i] + 1) * D, out + i * D);
+	return Value::node(std::move(result), {weight}, [weight, rows, D](const Tensor& grad_out) {
+		if (!weight.requires_grad()) return;
+		float* g = weight.grad().data().data();
+		const float* go = grad_out.data().data();
+		for (size_t i = 0; i < rows.size(); i++)
+			for (size_t d = 0; d < D; d++) g[rows[i] * D + d] += go[i * D + d];
+	});
+}
+
 Value operator*(const Value& a, float scalar) { return scale(a, scalar); }
 Value operator*(float scalar, const Value& a) { return scale(a, scalar); }
 Value operator-(const Value& a) { return scale(a, -1.0f); }

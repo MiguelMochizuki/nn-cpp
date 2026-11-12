@@ -19,6 +19,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 using namespace bench;
 
@@ -102,7 +103,8 @@ TEST_CASE("workload shapes") {
 	CHECK(make_workload("cnn_large", 1).x.shape() == std::vector<size_t>{64, 3, 64, 64});
 	CHECK(make_workload("cnn_fer", 1).x.shape() == std::vector<size_t>{64, 1, 48, 48});
 	CHECK(make_workload("mlp_wide", 1).x.shape() == std::vector<size_t>{256, 784});
-	CHECK(workload_names().size() == 6);
+	CHECK(make_workload("transformer_tiny", 1).x.shape() == std::vector<size_t>{16, 64});
+	CHECK(workload_names().size() == 7);
 }
 
 TEST_CASE("workloads are learnable") {
@@ -112,6 +114,31 @@ TEST_CASE("workloads are learnable") {
 	Workload wide = make_workload("mlp_wide", 1);
 	auto wl = train_losses(wide, 15);
 	CHECK(wl.second < wl.first);
+	Workload tf = make_workload("transformer_tiny", 1);
+	auto tl = train_losses(tf, 5);
+	CHECK(std::isfinite(tl.first));
+	CHECK(tl.second < tl.first);
+}
+
+TEST_CASE("transformer_tiny keeps LayerNorm gamma at one and zeroes biases") {
+	Workload w = make_workload("transformer_tiny", 1);
+	size_t gammas = 0, zeros = 0;
+	for (const auto& p : w.model->named_parameters()) {
+		const std::vector<float>& d = p.second.data().data();
+		auto ends = [&](const char* suffix) {
+			std::string n = p.first, e = suffix;
+			return n.size() >= e.size() && n.compare(n.size() - e.size(), e.size(), e) == 0;
+		};
+		if (ends("gamma")) {
+			gammas++;
+			CHECK(std::all_of(d.begin(), d.end(), [](float v) { return v == 1.0f; }));
+		} else if (ends("beta") || ends("bias")) {
+			zeros++;
+			CHECK(std::all_of(d.begin(), d.end(), [](float v) { return v == 0.0f; }));
+		}
+	}
+	CHECK(gammas == 5);  // 2 layers x 2 LayerNorms + the final one
+	CHECK(zeros > 0);
 }
 
 TEST_CASE("cnn_fer runs one step with a finite loss") {
