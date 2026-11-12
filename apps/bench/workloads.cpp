@@ -12,10 +12,13 @@
 #include "nn/nn/flatten.hpp"
 #include "nn/nn/linear.hpp"
 #include "nn/nn/pool2d.hpp"
+#include "nn/nn/transformer.hpp"
+#include "nn/autograd/ops.hpp"
 #include "nn/optim/adam.hpp"
 #include "nn/optim/adamw.hpp"
 #include "nn/optim/sgd.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 #include <stdexcept>
@@ -24,12 +27,13 @@ namespace bench {
 
 using namespace nn;
 
-void reseed_parameters(Module& model, unsigned seed) {
+void reseed_parameters(Module& model, unsigned seed, bool keep_ones_rank1) {
 	std::mt19937 gen(seed);
 	for (Value p : model.parameters()) {
 		Tensor& t = p.data();
 		std::vector<float>& d = t.data();
 		if (t.ndim() < 2) {
+			if (keep_ones_rank1 && std::all_of(d.begin(), d.end(), [](float v) { return v == 1.0f; })) continue;
 			std::fill(d.begin(), d.end(), 0.0f);
 			continue;
 		}
@@ -40,7 +44,50 @@ void reseed_parameters(Module& model, unsigned seed) {
 }
 
 std::vector<std::string> workload_names() {
-	return {"xor", "mlp_wide", "cnn_mnist", "cnn_large", "mlp_adam", "cnn_fer"};
+	return {"xor", "mlp_wide", "cnn_mnist", "cnn_large", "mlp_adam", "cnn_fer", "transformer_tiny"};
+}
+
+/**
+ * Wraps a Transformer and flattens its {N, T, V} logits to {N*T, V} so the Sequential and
+ * cross_entropy_loss path of the harness applies unchanged
+ *
+ * Attributes: inner_ the wrapped transformer
+ */
+class FlatTransformer : public Module {
+public:
+	explicit FlatTransformer(const TransformerConfig& c) : inner_(c) {}
+	Value forward(const Value& ids) override {
+		Value o = inner_.forward(ids);
+		const std::vector<size_t>& s = o.data().shape();
+		return reshape(o, {s[0] * s[1], s[2]});
+	}
+	std::vector<Value> parameters() const override { return inner_.parameters(); }
+	std::vector<std::pair<std::string, Value>> named_parameters() const override { return inner_.named_parameters(); }
+	void train(bool mode = true) override { Module::train(mode); inner_.train(mode); }
+
+private:
+	Transformer inner_;
+};
+
+/**
+ * Builds the transformer_tiny workload: random token ids, random target ids, AdamW
+ *
+ * Parameters:
+ * unsigned seed: seed for parameters, ids and targets
+ *
+ * Returns Workload: x {16, 64} float ids in [0, 64), y {16*64} float ids
+ */
+static Workload make_transformer_tiny(unsigned seed) {
+	Workload w{"transformer_tiny", std::make_shared<Sequential>(), nullptr, Tensor({16, 64}), Tensor({16 * 64}), true};
+	auto net = std::make_unique<FlatTransformer>(TransformerConfig{64, 64, 4, 2, 64});
+	reseed_parameters(*net, seed, true);
+	w.model->add(std::move(net));
+	w.optimizer = std::make_shared<AdamW>(w.model->parameters(), 1e-3f);
+	std::mt19937 gen(seed + 1);
+	std::uniform_int_distribution<int> id(0, 63);
+	for (float& v : w.x.data()) v = static_cast<float>(id(gen));
+	for (float& v : w.y.data()) v = static_cast<float>(id(gen));
+	return w;
 }
 
 /**
@@ -90,6 +137,7 @@ static std::shared_ptr<Sequential> build_cnn(const std::vector<size_t>& channels
 }
 
 Workload make_workload(const std::string& name, unsigned seed) {
+	if (name == "transformer_tiny") return make_transformer_tiny(seed);
 	Workload w{name, nullptr, nullptr, Tensor({1}), Tensor({1}), false};
 	std::vector<size_t> xshape;
 	size_t out = 10;

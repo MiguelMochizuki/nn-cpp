@@ -102,7 +102,8 @@ TEST_CASE("workload shapes") {
 	CHECK(make_workload("cnn_large", 1).x.shape() == std::vector<size_t>{64, 3, 64, 64});
 	CHECK(make_workload("cnn_fer", 1).x.shape() == std::vector<size_t>{64, 1, 48, 48});
 	CHECK(make_workload("mlp_wide", 1).x.shape() == std::vector<size_t>{256, 784});
-	CHECK(workload_names().size() == 6);
+	CHECK(make_workload("transformer_tiny", 1).x.shape() == std::vector<size_t>{16, 64});
+	CHECK(workload_names().size() == 7);
 }
 
 TEST_CASE("workloads are learnable") {
@@ -112,6 +113,10 @@ TEST_CASE("workloads are learnable") {
 	Workload wide = make_workload("mlp_wide", 1);
 	auto wl = train_losses(wide, 15);
 	CHECK(wl.second < wl.first);
+	Workload tf = make_workload("transformer_tiny", 1);
+	auto tl = train_losses(tf, 5);
+	CHECK(std::isfinite(tl.first));
+	CHECK(tl.second < tl.first);
 }
 
 TEST_CASE("cnn_fer runs one step with a finite loss") {
