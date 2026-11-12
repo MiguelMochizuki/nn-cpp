@@ -45,6 +45,7 @@ add_library(nn_core STATIC
 	src/data/dataloader.cpp
 	src/data/fer2013.cpp
 	src/data/subset.cpp
+	src/data/text.cpp
 	src/data/transform.cpp
 )
 
