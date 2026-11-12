@@ -113,6 +113,8 @@ private:
 
 /*
  * Token-id transformer: Embedding, PositionalEncoding, blocks, final LayerNorm, Linear head.
+ * The encoder-only (causal = false) stack has no key-padding path in forward, so padded tokens
+ * influence real positions in variable-length batches.
  *
  * Attributes: owned embedding, positions, blocks, final norm and head
  */

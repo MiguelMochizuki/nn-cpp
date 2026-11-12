@@ -61,7 +61,7 @@ Nothing is fused. Every step above materialises its result and has its own backw
 
 `checkpoint.cpp` stores parameters by `named_parameters()` name, then module buffers (BatchNorm running statistics), then the optimizer state from `Optimizer::state()`. The format is little-endian with fixed-width integers and IEEE-754 floats. A load validates every name and shape before touching the model, and writes go to `path.tmp` and are then renamed.
 
-Limits: the architecture is not stored, and layers without parameters leave no trace, so swapping `ReLU` for `Tanh` is not detected. `DataLoader` shuffle order, a scheduler's step counter (restore it with `set_step`), a `ReduceLROnPlateau`'s state (best value, bad-epoch counter, cooldown) and Dropout's random stream are not saved. A 1.1 build reads every 1.0 file; a file saved without buffers cannot be loaded into a model that has them.
+Limits: the architecture is not stored, and layers without parameters leave no trace, so swapping `ReLU` for `Tanh` is not detected. Likewise a changed `Transformer` `heads` or `causal` is not detected when the parameter shapes match, since neither changes a shape; `learned_positions` adds a `pos.pe` parameter, so mixing it up is caught by the name check. `DataLoader` shuffle order, a scheduler's step counter (restore it with `set_step`), a `ReduceLROnPlateau`'s state (best value, bad-epoch counter, cooldown) and Dropout's random stream are not saved. A 1.1 build reads every 1.0 file; a file saved without buffers cannot be loaded into a model that has them.
 
 ## Scope
 

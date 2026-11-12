@@ -31,7 +31,7 @@ public:
 	/* Public, look up the rows for a tensor of ids
 	 *
 	 * Parameters:
-	 * Value ids: float-valued integer ids in [0, num_embeddings), any shape, no grad needed
+	 * Value ids: float-valued integer ids in [0, num_embeddings), any shape; ids are not differentiable, so any gradient for them is discarded
 	 *
 	 * Returns Value: shape ids.shape() + {dim}; throws TensorShapeError for an invalid id
 	 */

@@ -344,7 +344,7 @@ namespace {
  * Parameters:
  * const Value& x: Operand
  * F fwd: float -> float forward map
- * D deriv: (x, y) -> dy/dx, given the input and the forward output
+ * D deriv: x -> dy/dx, given the input
  *
  * Returns Value: fwd(x) elementwise; backward multiplies grad_out by deriv
  */

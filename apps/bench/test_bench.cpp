@@ -19,6 +19,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 using namespace bench;
 
@@ -117,6 +118,27 @@ TEST_CASE("workloads are learnable") {
 	auto tl = train_losses(tf, 5);
 	CHECK(std::isfinite(tl.first));
 	CHECK(tl.second < tl.first);
+}
+
+TEST_CASE("transformer_tiny keeps LayerNorm gamma at one and zeroes biases") {
+	Workload w = make_workload("transformer_tiny", 1);
+	size_t gammas = 0, zeros = 0;
+	for (const auto& p : w.model->named_parameters()) {
+		const std::vector<float>& d = p.second.data().data();
+		auto ends = [&](const char* suffix) {
+			std::string n = p.first, e = suffix;
+			return n.size() >= e.size() && n.compare(n.size() - e.size(), e.size(), e) == 0;
+		};
+		if (ends("gamma")) {
+			gammas++;
+			CHECK(std::all_of(d.begin(), d.end(), [](float v) { return v == 1.0f; }));
+		} else if (ends("beta") || ends("bias")) {
+			zeros++;
+			CHECK(std::all_of(d.begin(), d.end(), [](float v) { return v == 0.0f; }));
+		}
+	}
+	CHECK(gammas == 5);  // 2 layers x 2 LayerNorms + the final one
+	CHECK(zeros > 0);
 }
 
 TEST_CASE("cnn_fer runs one step with a finite loss") {

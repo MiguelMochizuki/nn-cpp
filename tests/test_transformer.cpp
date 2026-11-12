@@ -14,6 +14,7 @@
 #include "nn/nn/transformer.hpp"
 #include "nn/checkpoint.hpp"
 #include "nn/optim/adamw.hpp"
+#include "nn/kernels/parallel.hpp"
 #include "nn/random.hpp"
 #include "nn/autograd/ops.hpp"
 
@@ -22,6 +23,7 @@
 #include <limits>
 #include <random>
 #include <set>
+#include <utility>
 #include <string>
 #include <stdexcept>
 
@@ -110,6 +112,11 @@ TEST_CASE("positional encoding sinusoidal and learned") {
 	CHECK(d[2] == doctest::Approx(0.0f));
 	CHECK(d[3] == doctest::Approx(1.0f));
 	CHECK(d[4] == doctest::Approx(std::sin(1.0f)));
+	// pe[1][2] = sin(1 / 10000^(2/4)), pe[1][3] = cos of the same angle
+	float angle = 1.0f / std::pow(10000.0f, 2.0f / 4.0f);
+	CHECK(d[6] == doctest::Approx(std::sin(angle)));
+	CHECK(d[7] == doctest::Approx(std::cos(angle)));
+	CHECK(d[5] == doctest::Approx(std::cos(1.0f)));
 	CHECK(d[12] == d[0 + 0]);
 	CHECK(d[12 + 4] == d[4]);
 	PositionalEncoding odd(3, 3);
@@ -282,6 +289,27 @@ TEST_CASE("attention gradcheck on input and q.weight") {
 	}, qw));
 }
 
+namespace {
+
+// Looks a parameter up by its named_parameters() name
+Value named_param(const Module& m, const std::string& name) {
+	for (const auto& p : m.named_parameters())
+		if (p.first == name) return p.second;
+	throw std::runtime_error("no parameter named " + name);
+}
+
+}  // namespace
+
+TEST_CASE("attention gradcheck on k, v, o weights and o bias") {
+	MultiHeadAttention a(4, 2, true);
+	Tensor w = Tensor::random({2, 3, 4}, 0.5f, 2.0f);
+	Value x = rand_leaf({2, 3, 4});
+	for (const char* name : {"k.weight", "v.weight", "o.weight", "o.bias"}) {
+		INFO("parameter ", name);
+		CHECK(gradcheck([&](Value) { return sum(mul(a.forward(x), Value::leaf(w, false))); }, named_param(a, name)));
+	}
+}
+
 TEST_CASE("attention train() reaches dropout") {
 	MultiHeadAttention a(4, 2, false, 0.5f);
 	Value x = rand_leaf({1, 4, 4});
@@ -435,4 +463,88 @@ TEST_CASE("transformer learns successor task") {
 
 TEST_CASE("transformer training is deterministic") {
 	CHECK(train_successor(20).second == train_successor(20).second);
+}
+
+TEST_CASE("transformer block gradcheck on input and parameters") {
+	manual_seed(3);
+	TransformerBlock b(4, 2, 4, 0.0f, true);
+	Tensor w = Tensor::random({1, 3, 4}, 0.5f, 2.0f);
+	Value x = rand_leaf({1, 3, 4}, true);
+	CHECK(gradcheck([&](Value v) { return sum(mul(b.forward(v), Value::leaf(w, false))); }, x));
+	Value xf = rand_leaf({1, 3, 4});
+	for (const char* name : {"fc1.weight", "ln2.gamma", "attn.o.bias"}) {
+		INFO("parameter ", name);
+		CHECK(gradcheck([&](Value) { return sum(mul(b.forward(xf), Value::leaf(w, false))); }, named_param(b, name)));
+	}
+}
+
+TEST_CASE("transformer gradcheck on embed.weight and head.weight") {
+	manual_seed(3);
+	Transformer t(TransformerConfig{5, 4, 2, 1, 4});
+	Value ids = ids_of({1, 2, 2, 4, 0, 3}, 2, 3);
+	Tensor w = Tensor::random({2, 3, 5}, 0.5f, 2.0f);
+	for (const char* name : {"embed.weight", "head.weight"}) {
+		INFO("parameter ", name);
+		CHECK(gradcheck([&](Value) { return sum(mul(t.forward(ids), Value::leaf(w, false))); }, named_param(t, name)));
+	}
+}
+
+TEST_CASE("transformer with learned positions: names, count, checkpoint round trip") {
+	TransformerConfig c = small_config();
+	c.learned_positions = true;
+	manual_seed(1);
+	Transformer a(c);
+	manual_seed(2);
+	Transformer b(c);
+	Transformer sinus(small_config());
+	size_t pe_count = 0;
+	for (const auto& p : a.named_parameters()) pe_count += p.first == "pos.pe";
+	CHECK(pe_count == 1);
+	CHECK(named_param(a, "pos.pe").data().shape() == std::vector<size_t>{16, 8});
+	CHECK(a.parameters().size() == sinus.parameters().size() + 1);
+	size_t na = 0, ns = 0;
+	for (const Value& p : a.parameters()) na += p.data().size();
+	for (const Value& p : sinus.parameters()) ns += p.data().size();
+	CHECK(na == ns + 16 * 8);
+	std::string path = (std::filesystem::temp_directory_path() / "nn_transformer_learned_ckpt.bin").string();
+	save_checkpoint(path, a);
+	load_checkpoint(path, b);
+	std::filesystem::remove(path);
+	a.eval();
+	b.eval();
+	Value ids = ids_of({1, 2, 3, 4, 5, 6}, 2, 3);
+	CHECK(a.forward(ids).data().data() == b.forward(ids).data().data());
+}
+
+TEST_CASE("transformer rejects a sequence longer than max_len") {
+	Transformer t(small_config());
+	CHECK(t.forward(ids_of(std::vector<float>(16, 1.0f), 1, 16)).data().shape() == std::vector<size_t>{1, 16, 11});
+	CHECK_THROWS_AS(t.forward(ids_of(std::vector<float>(17, 1.0f), 1, 17)), TensorShapeError);
+}
+
+TEST_CASE("transformer forward and gradients are bitwise equal for any thread count") {
+	// Restores the thread count when the test scope ends
+	struct Restore {
+		size_t saved = kernels::num_threads();
+		~Restore() { kernels::set_num_threads(saved); }
+	} restore;
+	manual_seed(5);
+	Transformer t(TransformerConfig{11, 32, 4, 2, 16});
+	const size_t N = 8, T = 16;
+	std::vector<float> idv(N * T);
+	for (size_t i = 0; i < idv.size(); i++) idv[i] = static_cast<float>((i * 7 + i / 3) % 11);
+	Value ids = ids_of(idv, N, T);
+	Tensor w = Tensor::random({N, T, 11}, 0.5f, 2.0f);
+	auto run = [&](size_t threads) {
+		kernels::set_num_threads(threads);
+		for (const Value& p : t.parameters()) Value(p).zero_grad();
+		Value y = t.forward(ids);
+		sum(mul(y, Value::leaf(w, false))).backward();
+		std::vector<std::vector<float>> out{y.data().data()};
+		for (const Value& p : t.parameters()) out.push_back(p.grad().data());
+		return out;
+	};
+	auto one = run(1), four = run(4);
+	CHECK(one.size() == four.size());
+	CHECK(one == four);
 }

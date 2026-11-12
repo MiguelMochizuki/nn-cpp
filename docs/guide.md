@@ -99,7 +99,7 @@ Defaults are `--epochs 100 --batch 64 --lr 1e-3 --seed 1 --balance sampler --smo
 
 ## A character-level Transformer
 
-`Transformer` (`nn/nn/transformer.hpp`) maps float token ids `{N, T}` to logits `{N, T, vocab}`: an `Embedding`, a `PositionalEncoding`, pre-norm `TransformerBlock`s, a final `LayerNorm` and a `Linear` head. `TransformerConfig` is `{vocab_size, dim, heads, layers, max_len}` plus `mlp_ratio = 4`, `dropout = 0`, `causal = true` and `learned_positions = false`. `sequence_cross_entropy(logits, targets)` is the matching loss; targets equal to `ignore_index` (default -100) contribute nothing, which lets a task score only its answer.
+`Transformer` (`nn/nn/transformer.hpp`) maps float token ids `{N, T}` to logits `{N, T, vocab}`: an `Embedding`, a `PositionalEncoding`, pre-norm `TransformerBlock`s, a final `LayerNorm` and a `Linear` head. `TransformerConfig` is `{vocab_size, dim, heads, layers, max_len}` plus `mlp_ratio = 4`, `dropout = 0`, `causal = true` and `learned_positions = false`. `sequence_cross_entropy(logits, targets)` is the matching loss; targets equal to `ignore_index` (default -100) contribute nothing, which lets a task score only its answer. The encoder-only (`causal = false`) `Transformer` has no key-padding path in `forward`, so padded tokens influence real positions in variable-length batches; use fixed-length batches or `MultiHeadAttention::attend` with a padding mask.
 
 The program below teaches the model to copy: each sample is six letters, `=`, and the same six letters. Only the second half is scored, so the model has to read the first half to get any of it right. It is tested (compiled against `build/native` and run, 300 steps of batch 32, about 6 seconds):
 

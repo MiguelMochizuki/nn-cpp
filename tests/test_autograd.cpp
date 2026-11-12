@@ -859,7 +859,7 @@ TEST_CASE("axis reductions on 1-D tensors and size-1 axes") {
 }
 
 TEST_CASE("axis sum, axis mean and rsqrt gradchecks") {
-	for (std::vector<size_t> shape : {std::vector<size_t>{1}, {7, 3}, {33, 5}, {257, 2}}) {
+	for (std::vector<size_t> shape : {std::vector<size_t>{1}, std::vector<size_t>{7, 3}, std::vector<size_t>{33, 5}, std::vector<size_t>{257, 2}}) {
 		for (int axis = 0; axis < static_cast<int>(shape.size()); axis++) {
 			for (bool keep : {false, true}) {
 				Value x = spread_leaf(shape);
@@ -1196,9 +1196,12 @@ TEST_CASE("sequence_cross_entropy gradcheck") {
 		size_t P = shape[0] * shape[1], V = shape[2];
 		Tensor tg({shape[0], shape[1]});
 		for (size_t i = 0; i < P; i++) tg.data()[i] = (i % 4 == 3 && P > 1) ? -100.0f : static_cast<float>((i * 5) % V);
-		auto f = [tg](Value l) { return sequence_cross_entropy(l, tg, -100, 0.1f); };
+		float count = 0.0f;
+		for (size_t i = 0; i < P; i++) count += tg.data()[i] != -100.0f ? 1.0f : 0.0f;
+		// scaled by the count of scored positions so the gradients are O(1) and the tolerance bites
+		auto f = [tg, count](Value l) { return mul(sequence_cross_entropy(l, tg, -100, 0.1f), Value::leaf(Tensor({1}, count), false)); };
 		Value x = Value::leaf(Tensor::random(shape, -2.0f, 2.0f), true);
-		CHECK(gradcheck(f, x, 1e-3f, 0.05f));
+		CHECK(gradcheck(f, x, 1e-3f, 1e-2f));
 	}
 }
 
@@ -1231,7 +1234,7 @@ TEST_CASE("exp log sqrt div gelu forward values") {
 }
 
 TEST_CASE("exp log sqrt gelu gradcheck") {
-	for (auto shape : {std::vector<size_t>{1}, {7}, {3, 5}}) {
+	for (auto shape : {std::vector<size_t>{1}, std::vector<size_t>{7}, std::vector<size_t>{3, 5}}) {
 		Value x = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
 		CHECK(gradcheck([](Value v) { return sum(exp(v)); }, x));
 		CHECK(gradcheck([](Value v) { return sum(log(v)); }, x));
@@ -1241,7 +1244,7 @@ TEST_CASE("exp log sqrt gelu gradcheck") {
 }
 
 TEST_CASE("div gradcheck both operands including broadcast") {
-	for (auto shape : {std::vector<size_t>{1}, {7}, {3, 5}}) {
+	for (auto shape : {std::vector<size_t>{1}, std::vector<size_t>{7}, std::vector<size_t>{3, 5}}) {
 		Value a = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
 		Value b = Value::leaf(Tensor::random(shape, 0.5f, 2.0f), true);
 		CHECK(gradcheck([b](Value v) { return sum(div(v, b)); }, a));
