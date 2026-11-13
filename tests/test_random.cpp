@@ -30,7 +30,7 @@ public:
 	}
 };
 
-std::vector<float> first_batch(DataLoader& dl) { return dl.get_batch(0).first.data().data(); }
+Storage first_batch(DataLoader& dl) { return dl.get_batch(0).first.data().data(); }
 
 }  // namespace
 

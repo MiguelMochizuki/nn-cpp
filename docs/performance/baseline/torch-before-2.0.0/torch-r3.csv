@@ -1,0 +1,7 @@
+config,label,threads,benchmark,size,forward_ms,backward_ms,optim_ms,total_ms,gflops,spread,runs
+torch,pinned,8,mlp_wide,,2.62088,5.30044,0.657516,8.57937,,0.0211345,50
+torch,pinned,8,cnn_mnist,,0.538904,0.652284,0.0765555,1.26776,,0.0261159,50
+torch,pinned,8,cnn_large,,30.5375,45.2832,0.212964,76.0958,,0.00766135,50
+torch,pinned,8,mlp_adam,,2.64056,3.95585,3.28632,9.87627,,0.0142696,50
+torch,pinned,8,cnn_fer,,8.88454,10.9057,0.652257,20.5076,,0.0277881,50
+torch,pinned,8,transformer_tiny,,1.9081,3.26881,1.11504,6.29925,,0.0128574,50

@@ -41,6 +41,23 @@ public:
 	 */
 	Value forward(const Value& input) override;
 
+	/* Public, normalisation and ReLU in one op
+	 *
+	 * Parameters: none
+	 *
+	 * Returns bool: true in training mode (evaluation mode keeps the separate ops)
+	 */
+	bool can_fuse_relu() const override { return training_; }
+
+	/* Public, relu(forward(input)) as one op in training mode
+	 *
+	 * Parameters:
+	 * Value input: shape {N, C} or {N, C, H, W} matching the layer
+	 *
+	 * Returns Value: the activated output; running statistics are updated exactly as in forward
+	 */
+	Value forward_relu(const Value& input) override;
+
 	/* Public, list the learnable parameters
 	 *
 	 * Parameters: none
@@ -64,6 +81,17 @@ public:
 	 * Returns vector<pair<string, Tensor*>>: {"running_mean", ...}, {"running_var", ...}
 	 */
 	std::vector<std::pair<std::string, Tensor*>> named_buffers() const override;
+
+private:
+	/* Private, shared body of forward and forward_relu
+	 *
+	 * Parameters:
+	 * Value input: layer input
+	 * bool fuse_relu: apply ReLU inside the training-mode op
+	 *
+	 * Returns Value: the layer output
+	 */
+	Value run(const Value& input, bool fuse_relu);
 
 protected:
 	/* Protected, construct the shared state

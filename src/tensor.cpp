@@ -15,9 +15,30 @@
 #include <algorithm>
 #include <limits>
 
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+
 namespace nn {
 
 namespace {
+
+#ifdef __GLIBC__
+// A training step allocates and frees many multi-megabyte tensors. By default glibc serves
+// blocks above ~128 KB with mmap and returns them with munmap, so every step page-faults and
+// zeroes fresh memory in the kernel, serially: about 40% of a cnn_fer step. Keeping freed
+// blocks in the heap makes later allocations reuse warm pages. The mmap threshold cannot be set
+// above 32 MiB, and a 64 x 32 x 64 x 64 activation is exactly that, so mmap is switched off.
+// Memory stays reserved at the high-water mark of the process.
+// ponytail: process-wide glibc setting; a pooling allocator for Tensor storage would scope it to the library
+[[maybe_unused]] const bool kMallocTuned = [] {
+	mallopt(M_MMAP_THRESHOLD, 32 << 20);
+	mallopt(M_MMAP_MAX, 0);
+	mallopt(M_TRIM_THRESHOLD, 1 << 30);
+	mallopt(M_TOP_PAD, 64 << 20);
+	return true;
+}();
+#endif
 
 // Elements per thread below which an elementwise loop stays serial
 constexpr size_t kElementwiseChunk = size_t(1) << 13;
@@ -145,7 +166,7 @@ size_t broadcast_offset(const std::vector<size_t>& out_idx, const std::vector<si
 template <typename Op>
 Tensor elementwise(const Tensor& a, const Tensor& b, Op op) {
 	std::vector<size_t> out_shape = a.shape() == b.shape() ? a.shape() : broadcast_shape(a.shape(), b.shape());
-	Tensor out(out_shape);
+	Tensor out = Tensor::empty(out_shape);  // every element is computed below
 	const size_t n = out.size();
 	if (n == 0) return out;
 
@@ -219,18 +240,45 @@ Tensor elementwise(const Tensor& a, const Tensor& b, Op op) {
 
 }  // namespace
 
-Tensor::Tensor(std::vector<size_t> shape)
-	: shape_(std::move(shape)), strides_(compute_strides(shape_)), data_(product(shape_), 0.0f) {}
+namespace {
+/**
+ * Writes value to every element of storage, in parallel for large buffers, so that the first touch
+ * of fresh memory is spread over the threads instead of one core zeroing it alone
+ *
+ * Parameters:
+ * Storage& data: Buffer to fill
+ * float value: Value written to each element
+ *
+ * Returns void
+ */
+void fill_storage(Storage& data, float value) {
+	float* p = data.data();
+	kernels::parallel_range(data.size(), size_t(1) << 16, [=](size_t lo, size_t hi) { std::fill(p + lo, p + hi, value); });
+}
+}  // namespace
+
+Tensor::Tensor(std::vector<size_t> shape, Uninit)
+	: shape_(std::move(shape)), strides_(compute_strides(shape_)), data_(product(shape_)) {}
+
+Tensor Tensor::empty(std::vector<size_t> shape) { return Tensor(std::move(shape), Uninit{}); }
+
+Tensor::Tensor(std::vector<size_t> shape) : Tensor(std::move(shape), Uninit{}) { fill_storage(data_, 0.0f); }
 
 Tensor::Tensor(std::vector<size_t> shape, std::vector<float> data)
+	: shape_(std::move(shape)), strides_(compute_strides(shape_)), data_(data.begin(), data.end()) {
+	if (data_.size() != product(shape_)) {
+		throw TensorShapeError();
+	}
+}
+
+Tensor::Tensor(std::vector<size_t> shape, Storage data)
 	: shape_(std::move(shape)), strides_(compute_strides(shape_)), data_(std::move(data)) {
 	if (data_.size() != product(shape_)) {
 		throw TensorShapeError();
 	}
 }
 
-Tensor::Tensor(std::vector<size_t> shape, float fill)
-	: shape_(std::move(shape)), strides_(compute_strides(shape_)), data_(product(shape_), fill) {}
+Tensor::Tensor(std::vector<size_t> shape, float fill) : Tensor(std::move(shape), Uninit{}) { fill_storage(data_, fill); }
 
 const std::vector<size_t>& Tensor::shape() const { return shape_; }
 const std::vector<size_t>& Tensor::strides() const { return strides_; }
@@ -252,8 +300,8 @@ size_t Tensor::flat_index(const std::vector<size_t>& idx) const {
 
 float Tensor::get(const std::vector<size_t>& idx) const { return data_[flat_index(idx)]; }
 float& Tensor::at(const std::vector<size_t>& idx) { return data_[flat_index(idx)]; }
-const std::vector<float>& Tensor::data() const { return data_; }
-std::vector<float>& Tensor::data() { return data_; }
+const Storage& Tensor::data() const { return data_; }
+Storage& Tensor::data() { return data_; }
 
 Tensor& Tensor::operator+=(const Tensor& other) {
 	if (shape_ != other.shape_) throw TensorShapeError();
@@ -292,15 +340,18 @@ Tensor& Tensor::operator*=(float scalar) {
 	return *this;
 }
 
-void Tensor::zero_() {
-	std::fill(data_.begin(), data_.end(), 0.0f);
-}
+void Tensor::zero_() { fill_storage(data_, 0.0f); }
 
 Tensor Tensor::reshape(std::vector<size_t> new_shape) const& {
 	if (product(new_shape) != data_.size()) {
 		throw TensorShapeError();
 	}
-	return Tensor(std::move(new_shape), data_);
+	// A parallel copy into uninitialised storage; the vector copy constructor would do it on one thread
+	Tensor out(std::move(new_shape), Uninit{});
+	const float* src = data_.data();
+	float* dst = out.data_.data();
+	kernels::parallel_range(data_.size(), size_t(1) << 15, [=](size_t lo, size_t hi) { std::copy(src + lo, src + hi, dst + lo); });
+	return out;
 }
 
 Tensor Tensor::reshape(std::vector<size_t> new_shape) && {
@@ -318,23 +369,54 @@ Tensor Tensor::transpose(std::vector<size_t> perm) const {
 	for (size_t i = 0; i < perm.size(); i++) {
 		out_shape[i] = shape_[perm[i]];
 	}
-	Tensor out(out_shape);
-	std::vector<size_t> out_strides = compute_strides(out_shape);
-
-	for (size_t flat = 0; flat < data_.size(); flat++) {
-		std::vector<size_t> in_idx(shape_.size());
-		size_t remaining = flat;
-		for (size_t i = 0; i < shape_.size(); i++) {
-			in_idx[i] = remaining / strides_[i];
-			remaining %= strides_[i];
-		}
-		size_t out_flat = 0;
-		for (size_t i = 0; i < perm.size(); i++) {
-			out_flat += in_idx[perm[i]] * out_strides[i];
-		}
-		out.data_[out_flat] = data_[flat];
-	}
+	Tensor out = Tensor::empty(out_shape);  // transpose_into writes every element
+	transpose_into(perm, out.data_.data(), Combine::kCopy);
 	return out;
+}
+
+void Tensor::transpose_into(const std::vector<size_t>& perm, float* dst, Combine mode) const {
+	if (perm.size() != shape_.size()) {
+		throw TensorShapeError();
+	}
+	const size_t rank = perm.size();
+	if (rank == 0 || data_.empty()) return;
+	// Input stride of each output axis; walking the output in order, the input offset follows an
+	// odometer over the outer axes while the last axis runs as a tight strided loop
+	std::vector<size_t> out_shape(rank), in_stride(rank);
+	for (size_t i = 0; i < rank; i++) {
+		out_shape[i] = shape_[perm[i]];
+		in_stride[i] = strides_[perm[i]];
+	}
+	const size_t inner = out_shape[rank - 1], istep = in_stride[rank - 1];
+	const float* src = data_.data();
+	// Whole rows of the last axis per chunk: every output element is still written by one thread
+	kernels::parallel_range(data_.size() / inner, std::max<size_t>(1, kElementwiseChunk / inner), [&](size_t lo, size_t hi) {
+		std::vector<size_t> idx(rank - 1);
+		size_t rem = lo, in = 0;
+		for (size_t d = rank - 1; d-- > 0;) {
+			idx[d] = rem % out_shape[d];
+			rem /= out_shape[d];
+			in += idx[d] * in_stride[d];
+		}
+		for (size_t row = lo; row < hi; row++) {
+			float* o = dst + row * inner;
+			const float* s = src + in;
+			if (mode == Combine::kCopy) {
+				for (size_t j = 0; j < inner; j++) o[j] = s[j * istep];
+			} else if (mode == Combine::kAdd) {
+				for (size_t j = 0; j < inner; j++) o[j] += s[j * istep];
+			} else {
+				for (size_t j = 0; j < inner; j++) o[j] = s[j * istep] + 0.0f;
+			}
+			for (size_t d = rank - 1; d-- > 0;) {
+				idx[d]++;
+				in += in_stride[d];
+				if (idx[d] < out_shape[d]) break;
+				in -= idx[d] * in_stride[d];
+				idx[d] = 0;
+			}
+		}
+	});
 }
 
 Tensor Tensor::sum(int axis) const {
@@ -353,14 +435,22 @@ Tensor Tensor::sum(int axis) const {
 	const float* src = data_.data();
 	float* dst = out.data_.data();
 
-	for (size_t outer = 0; outer < outer_size; outer++) {
-		for (size_t a = 0; a < axis_size; a++) {
-			size_t src_base = outer * axis_size * inner_size + a * inner_size;
-			size_t dst_base = outer * inner_size;
-			for (size_t inner = 0; inner < inner_size; inner++) {
-				dst[dst_base + inner] += src[src_base + inner];
-			}
-		}
+	// Every output element is written by one thread and summed in the same order as a serial loop
+	if (outer_size > 1) {
+		kernels::parallel_range(outer_size, std::max<size_t>(1, kElementwiseChunk / (axis_size * inner_size)),
+			[=](size_t lo, size_t hi) {
+			for (size_t outer = lo; outer < hi; outer++)
+				for (size_t a = 0; a < axis_size; a++) {
+					const float* row = src + outer * axis_size * inner_size + a * inner_size;
+					float* acc = dst + outer * inner_size;
+					for (size_t inner = 0; inner < inner_size; inner++) acc[inner] += row[inner];
+				}
+		});
+	} else {
+		kernels::parallel_range(inner_size, std::max<size_t>(1, kElementwiseChunk / axis_size), [=](size_t lo, size_t hi) {
+			for (size_t a = 0; a < axis_size; a++)
+				for (size_t inner = lo; inner < hi; inner++) dst[inner] += src[a * inner_size + inner];
+		});
 	}
 	return out;
 }
@@ -388,14 +478,21 @@ Tensor Tensor::max(int axis) const {
 	const float* src = data_.data();
 	float* dst = out.data_.data();
 
-	for (size_t outer = 0; outer < outer_size; outer++) {
-		for (size_t a = 0; a < axis_size; a++) {
-			size_t src_base = outer * axis_size * inner_size + a * inner_size;
-			size_t dst_base = outer * inner_size;
-			for (size_t inner = 0; inner < inner_size; inner++) {
-				dst[dst_base + inner] = std::max(dst[dst_base + inner], src[src_base + inner]);
-			}
-		}
+	if (outer_size > 1) {
+		kernels::parallel_range(outer_size, std::max<size_t>(1, kElementwiseChunk / (axis_size * inner_size)),
+			[=](size_t lo, size_t hi) {
+			for (size_t outer = lo; outer < hi; outer++)
+				for (size_t a = 0; a < axis_size; a++) {
+					const float* row = src + outer * axis_size * inner_size + a * inner_size;
+					float* acc = dst + outer * inner_size;
+					for (size_t inner = 0; inner < inner_size; inner++) acc[inner] = std::max(acc[inner], row[inner]);
+				}
+		});
+	} else {
+		kernels::parallel_range(inner_size, std::max<size_t>(1, kElementwiseChunk / axis_size), [=](size_t lo, size_t hi) {
+			for (size_t a = 0; a < axis_size; a++)
+				for (size_t inner = lo; inner < hi; inner++) dst[inner] = std::max(dst[inner], src[a * inner_size + inner]);
+		});
 	}
 	return out;
 }
@@ -460,8 +557,12 @@ Tensor div(const Tensor& a, const Tensor& b) {
 }
 
 Tensor scale(const Tensor& a, float scalar) {
-	Tensor out = a;
-	for (float& v : out.data()) v *= scalar;
+	Tensor out = Tensor::empty(a.shape());
+	const float* src = a.data().data();
+	float* dst = out.data().data();
+	kernels::parallel_range(a.size(), kElementwiseChunk, [=](size_t lo, size_t hi) {
+		for (size_t i = lo; i < hi; i++) dst[i] = src[i] * scalar;
+	});
 	return out;
 }
 
@@ -483,6 +584,17 @@ Tensor matmul(const Tensor& a, const Tensor& b, bool trans_a, bool trans_b) {
 		throw TensorShapeError();
 	}
 
+	// A batched left operand times a plain matrix: a is contiguous, so fold its batch axes into M rows
+	// and run one GEMM instead of one per sample
+	if (b.ndim() == 2 && !trans_a && a.ndim() > 2) {
+		std::vector<size_t> folded_shape(a.shape().begin(), a.shape().end() - 1);
+		folded_shape.push_back(n);
+		Tensor folded = Tensor::empty(folded_shape);  // sgemm without accumulate overwrites all of it
+		kernels::sgemm(false, trans_b, a.size() / a_cols, n, k, a.data().data(), a_cols, b.data().data(), b_cols,
+			folded.data().data(), n, false);
+		return folded;
+	}
+
 	std::vector<size_t> a_batch(a.shape().begin(), a.shape().end() - 2);
 	std::vector<size_t> b_batch(b.shape().begin(), b.shape().end() - 2);
 	std::vector<size_t> batch_shape = broadcast_shape(a_batch, b_batch);
@@ -490,7 +602,7 @@ Tensor matmul(const Tensor& a, const Tensor& b, bool trans_a, bool trans_b) {
 	std::vector<size_t> out_shape = batch_shape;
 	out_shape.push_back(m);
 	out_shape.push_back(n);
-	Tensor out(out_shape);
+	Tensor out = Tensor::empty(out_shape);  // each batch's sgemm overwrites its whole block
 
 	size_t batch_count = 1;
 	for (size_t d : batch_shape) batch_count *= d;
@@ -500,7 +612,7 @@ Tensor matmul(const Tensor& a, const Tensor& b, bool trans_a, bool trans_b) {
 	std::vector<size_t> b_batch_strides(b.strides().begin(), b.strides().end() - 2);
 	std::vector<size_t> batch_strides = compute_strides(batch_shape);
 
-	for (size_t bi = 0; bi < batch_count; bi++) {
+	auto one_matrix = [&](size_t bi) {
 		size_t a_off = 0, b_off = 0;
 		if (batch_count > 1) {
 			std::vector<size_t> batch_idx = unravel_index(bi, batch_strides, batch_shape);
@@ -509,6 +621,21 @@ Tensor matmul(const Tensor& a, const Tensor& b, bool trans_a, bool trans_b) {
 		}
 		kernels::sgemm(trans_a, trans_b, m, n, k, a.data().data() + a_off, a_cols, b.data().data() + b_off, b_cols,
 			out.data().data() + bi * m * n, n, false);
+	};
+	// sgemm only goes parallel above this many multiply-adds (see gemm.cpp). Below it each matrix is
+	// serial, so many small matrices (attention heads) are spread over threads instead. A batch with
+	// at least one matrix per thread is spread the same way whatever the matrix size: one fork/join
+	// for the whole batch instead of two per matrix, and a wide flat matrix (a convolution's
+	// Cout x K x hw) splits into too few chunks to use every thread. Every output matrix is still
+	// computed by one thread with the same tile order, so results do not change.
+	constexpr size_t kSmallGemm = size_t(1) << 20;
+	if (batch_count > 1 && (m * n * k < kSmallGemm || batch_count >= kernels::num_threads())) {
+		kernels::parallel_range(batch_count, std::max<size_t>(1, (size_t(1) << 16) / std::max<size_t>(1, m * n * k)),
+			[&](size_t lo, size_t hi) {
+			for (size_t bi = lo; bi < hi; bi++) one_matrix(bi);
+		});
+	} else {
+		for (size_t bi = 0; bi < batch_count; bi++) one_matrix(bi);
 	}
 	return out;
 }

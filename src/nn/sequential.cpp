@@ -5,6 +5,9 @@
  */
 
 #include "nn/nn/sequential.hpp"
+#include "nn/nn/activation.hpp"
+
+#include <typeinfo>
 
 namespace nn {
 
@@ -12,8 +15,14 @@ void Sequential::add(std::unique_ptr<Module> layer) { layers_.push_back(std::mov
 
 Value Sequential::forward(const Value& input) {
 	Value current = input;
-	for (auto& layer : layers_) {
-		current = layer->forward(current);
+	for (size_t i = 0; i < layers_.size(); i++) {
+		// A layer that can fold a following ReLU into its own op runs both in one node
+		if (i + 1 < layers_.size() && layers_[i]->can_fuse_relu() && typeid(*layers_[i + 1]) == typeid(ReLU)) {
+			current = layers_[i]->forward_relu(current);
+			i++;
+			continue;
+		}
+		current = layers_[i]->forward(current);
 	}
 	return current;
 }

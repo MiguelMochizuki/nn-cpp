@@ -33,6 +33,14 @@ public:
 	 */
 	explicit Dropout(float p = 0.5f);
 
+	/* Public, whether forward() currently changes its input
+	 *
+	 * Parameters: none
+	 *
+	 * Returns bool: true in training mode with p > 0
+	 */
+	bool active() const { return training_ && p_ > 0.0f; }
+
 	/* Public, apply dropout
 	 *
 	 * Parameters:

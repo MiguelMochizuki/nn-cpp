@@ -6,6 +6,7 @@
 
 #include "nn/optim/sgd.hpp"
 #include "nn/autograd/ops.hpp"
+#include "nn/kernels/parallel.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -58,16 +59,27 @@ SGD::SGD(std::vector<Value> params, float lr, float momentum, bool nesterov, flo
 }
 
 void SGD::step() {
+	// One fused pass per parameter, with the same float operations in the same order as the separate
+	// tensor ops it replaces; elements are independent, so ranges can run on different threads
 	for (size_t i = 0; i < params_.size(); i++) {
-		Tensor g = params_[i].grad();
-		if (weight_decay_ > 0.0f) g += params_[i].data() * weight_decay_;
-		if (momentum_ > 0.0f) {
-			velocity_[i] *= momentum_;
-			velocity_[i] += g;
-			if (nesterov_) g += velocity_[i] * momentum_;
-			else g = velocity_[i];
-		}
-		params_[i].data() -= g * lr_;
+		float* w = params_[i].data().data().data();
+		const float* g = params_[i].grad().data().data();
+		float* v = velocity_[i].data().data();
+		const float lr = lr_, mom = momentum_, wd = weight_decay_;
+		const bool nesterov = nesterov_;
+		kernels::parallel_range(params_[i].data().size(), size_t(1) << 13, [=](size_t lo, size_t hi) {
+			for (size_t k = lo; k < hi; k++) {
+				float gk = g[k];
+				if (wd > 0.0f) gk += w[k] * wd;
+				if (mom > 0.0f) {
+					v[k] *= mom;
+					v[k] += gk;
+					if (nesterov) gk += v[k] * mom;
+					else gk = v[k];
+				}
+				w[k] -= gk * lr;
+			}
+		});
 	}
 }
 

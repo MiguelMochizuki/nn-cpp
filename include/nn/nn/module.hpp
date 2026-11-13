@@ -33,6 +33,25 @@ public:
 	 */
 	virtual Value forward(const Value& input) = 0;
 
+	/* Public, whether forward_relu can run this layer and a ReLU that follows it as one op.
+	 * Sequential uses it to fuse the pair; the result must equal relu(forward(input)) and its
+	 * gradients must match the two ops run separately
+	 *
+	 * Parameters: none
+	 *
+	 * Returns bool: true if forward_relu is supported in the layer's current mode, default false
+	 */
+	virtual bool can_fuse_relu() const { return false; }
+
+	/* Public, compute relu(forward(input)) as a single op; only called when can_fuse_relu()
+	 *
+	 * Parameters:
+	 * Value input: input tensor wrapped in the autograd graph
+	 *
+	 * Returns Value: the activated output, same shape as forward(input)
+	 */
+	virtual Value forward_relu(const Value& input) { return forward(input); }
+
 	/* Public, list this layer's trainable parameters
 	 *
 	 * Parameters: none

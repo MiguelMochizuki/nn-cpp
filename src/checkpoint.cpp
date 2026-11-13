@@ -174,7 +174,7 @@ Entry tensor_entry(const std::string& name, const Tensor& t) {
 	Entry e;
 	e.name = name;
 	e.shape = t.shape();
-	e.data = t.data();
+	e.data.assign(t.data().begin(), t.data().end());
 	return e;
 }
 
@@ -280,12 +280,12 @@ int64_t load_checkpoint(const std::string& path, Module& model, Optimizer* optim
 	for (const auto& p : params) {
 		std::string name = "model." + p.first;
 		auto it = std::find_if(entries.begin(), entries.end(), [&](const Entry& e) { return e.name == name; });
-		p.second.data().data() = it->data;
+		p.second.data().data().assign(it->data.begin(), it->data.end());
 	}
 	for (const auto& b : buffers) {
 		std::string name = "model." + b.first;
 		auto it = std::find_if(entries.begin(), entries.end(), [&](const Entry& e) { return e.name == name; });
-		b.second->data() = it->data;
+		b.second->data().assign(it->data.begin(), it->data.end());
 	}
 	return step;
 }

@@ -3,6 +3,37 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] - 2026-11-13
+
+Performance release: the native build is faster than PyTorch 2.15 (CPU, eager) on five of the six bundled workloads and ties the sixth (see [docs/performance](docs/performance/README.md#v200-against-pytorch)). It contains one source-breaking change (`Tensor::data()` returns `nn::Storage`), hence the major version. Results are still bitwise identical for any thread count, but they are **not** bitwise equal to 1.3.0 (see Changed).
+
+### Changed (breaking)
+
+- `Tensor::data()` returns `nn::Storage` (`std::vector<float>` with a non-initialising allocator) instead of `std::vector<float>`. Code that binds the result to `std::vector<float>&`, or passes it where that type is required, must use `nn::Storage` or copy; `Storage` compares equal to a `std::vector<float>` with the same elements, `Tensor(shape, Storage)` was added next to the `std::vector<float>` constructor, and `Tensor::empty(shape)` allocates without filling. `Tensor(shape)` and `Tensor(shape, fill)` still fill.
+- Numerical results change in the last bits: a GEMM with a small output and a long depth (`m * n <= 65536`, `k >= 512`) is summed in depth pieces, GELU uses a vectorised `tanh` (absolute error under 1.4e-7), and the convolution bias gradient is summed per sample and then in sample order. Training losses shift by a few ulp.
+- A node's gradient is allocated on first accumulation and written instead of zero-filled and added to (`Value::grad_accum`).
+- `Sequential` folds a `Conv2d` or `BatchNorm` followed by `ReLU` into one node (`Module::can_fuse_relu()` and `forward_relu()`, new virtuals with defaults).
+- The library compiles with `-ffp-contract=off` (non-MSVC), because FMA contraction made fused loops differ between thread counts on `-march=native`.
+
+### Added
+
+- Ops: `linear(x, weight, bias)`, `attention(q, k, v, heads, key_padding_mask, causal)`, `conv2d_relu`, `batchnorm(..., fuse_relu)` (now one fused op with per-channel statistics), `layernorm` and `scaled_masked_softmax`; `softmax` has a fast path on the last axis. `Linear`, `MultiHeadAttention` (without attention dropout), `LayerNorm`, `Conv2d` and `BatchNorm` use them. Each is tested against the composition it replaces, for any thread count.
+- `nn/kernels/vmath.hpp`: `exp_one`/`exp_inplace` and `tanh_one`/`tanh_inplace`, identical across AVX2, scalar, native and portable builds.
+- `kernels::spin_microseconds()`, `kernels::set_spin_microseconds(us)` and the `NN_SPIN_US` variable: idle pool workers spin up to that long (default 100 µs, at most 10000, 0 disables) before sleeping.
+- `Tensor::empty`, `Tensor::transpose_into`, `Value::grad_accum` and `Dropout::active()`.
+- `apps/bench/bench_torch.py`: the same six workloads in PyTorch (CPU, eager), writing the same CSV with `config=torch`, and the comparison in `docs/performance/`.
+
+### Performance
+
+- GEMM: AVX2 microkernel with named accumulators (no stack spills), A packed once per block, depth-cut products for weight gradients, `matmul` over a batch runs one matrix per task, `matmul`/`matmul_bt` backward with a leading batch folds into one GEMM and accumulates in place.
+- Convolution works one sample per task with a private column buffer that stays in cache and recomputes `im2col` in the backward; `col2im` accumulates straight into the gradient.
+- Parallel `transpose`, `masked_fill`, `sum`/`max` over an axis, zero-fill of large tensors, and the SGD, Adam and AdamW update loops (fused into one pass). Max-pooling uses `uint32` indices. On glibc the library raises the `mmap` and trim thresholds with `mallopt`.
+- Native build, 8 threads, step time before and after on this release (ms): `mlp_wide` 10.35 → 8.28, `mlp_adam` 11.35 → 8.81, `cnn_mnist` 1.19 → 0.59, `cnn_fer` 38.44 → 15.01, `cnn_large` 101.78 → 48.12, `transformer_tiny` 14.33 → 4.56; PyTorch 2.15: 8.24, 9.80, 1.29, 20.51, 72.66, 6.24.
+
+### Documentation
+
+- `docs/architecture.md` no longer says nothing is fused and describes the fused ops, the convolution path, storage and the pool; `docs/api.md` lists the new functions; the README speed table compares with PyTorch.
+
 ## [1.3.0] - 2026-11-12
 
 Adds the pieces for a small decoder-only Transformer on character data. The public API of 1.2.0 is unchanged.

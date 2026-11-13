@@ -20,7 +20,11 @@ BatchNormBase::BatchNormBase(size_t num_features, size_t rank, float eps, float 
 	  running_mean_({num_features}, 0.0f),
 	  running_var_({num_features}, 1.0f) {}
 
-Value BatchNormBase::forward(const Value& input) {
+Value BatchNormBase::forward(const Value& input) { return run(input, false); }
+
+Value BatchNormBase::forward_relu(const Value& input) { return run(input, true); }
+
+Value BatchNormBase::run(const Value& input, bool fuse_relu) {
 	const std::vector<size_t>& shape = input.data().shape();
 	if (shape.size() != rank_ || shape[1] != num_features_) throw TensorShapeError();
 
@@ -29,33 +33,25 @@ Value BatchNormBase::forward(const Value& input) {
 	stat_shape[1] = num_features_;
 
 	if (training_) {
-		Value mu = input;
-		for (int axis = static_cast<int>(rank_) - 1; axis >= 0; axis--) {
-			if (axis != 1) mu = mean(mu, axis, true);
-		}
-		Value centered = sub(input, mu);
-		Value var = mul(centered, centered);
-		for (int axis = static_cast<int>(rank_) - 1; axis >= 0; axis--) {
-			if (axis != 1) var = mean(var, axis, true);
-		}
+		Tensor mu({num_features_}), var({num_features_});
+		Value out = batchnorm(input, weight_, bias_, eps_, &mu, &var, fuse_relu);
 		size_t n = input.data().size() / num_features_;
 		if (n > 1) {
 			float unbiased = static_cast<float>(n) / static_cast<float>(n - 1);
 			for (size_t c = 0; c < num_features_; c++) {
-				running_mean_.data()[c] = (1.0f - momentum_) * running_mean_.data()[c] + momentum_ * mu.data().data()[c];
+				running_mean_.data()[c] = (1.0f - momentum_) * running_mean_.data()[c] + momentum_ * mu.data()[c];
 				running_var_.data()[c] =
-					(1.0f - momentum_) * running_var_.data()[c] + momentum_ * var.data().data()[c] * unbiased;
+					(1.0f - momentum_) * running_var_.data()[c] + momentum_ * var.data()[c] * unbiased;
 			}
 		} else {
 			for (size_t c = 0; c < num_features_; c++) {
-				running_mean_.data()[c] = (1.0f - momentum_) * running_mean_.data()[c] + momentum_ * mu.data().data()[c];
+				running_mean_.data()[c] = (1.0f - momentum_) * running_mean_.data()[c] + momentum_ * mu.data()[c];
 			}
 		}
-		Value inv_std = rsqrt(add(var, Value::leaf(Tensor(stat_shape, eps_))));
-		Value normed = mul(centered, inv_std);
-		return add(mul(normed, reshape(weight_, stat_shape)), reshape(bias_, stat_shape));
+		return out;
 	}
 
+	if (fuse_relu) return relu(forward(input));
 	Value run_mean = Value::leaf(Tensor(stat_shape, running_mean_.data()));
 	Value run_var = Value::leaf(Tensor(stat_shape, running_var_.data()));
 	Value inv_std = rsqrt(add(run_var, Value::leaf(Tensor(stat_shape, eps_))));

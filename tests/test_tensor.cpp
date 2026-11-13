@@ -535,3 +535,24 @@ TEST_CASE("in-place add/sub on large tensors is identical for any thread count")
 	}
 	nn::kernels::set_num_threads(saved);
 }
+
+TEST_CASE("transpose_into copies, adds and stores like transpose") {
+	Tensor t({2, 3, 4});
+	for (size_t i = 0; i < t.size(); i++) t.data()[i] = static_cast<float>(i) - 5.0f;
+	t.data()[0] = -0.0f;
+	const std::vector<size_t> perm{2, 0, 1};
+	Tensor want = t.transpose(perm);
+	std::vector<float> copy(t.size(), 99.0f), added(t.size(), 1.0f), stored(t.size(), 99.0f);
+	t.transpose_into(perm, copy.data(), Tensor::Combine::kCopy);
+	t.transpose_into(perm, added.data(), Tensor::Combine::kAdd);
+	t.transpose_into(perm, stored.data(), Tensor::Combine::kAddToZero);
+	for (size_t i = 0; i < t.size(); i++) {
+		CHECK(copy[i] == want.data()[i]);
+		CHECK(added[i] == want.data()[i] + 1.0f);
+		CHECK(stored[i] == want.data()[i]);
+	}
+	// -0 is kept by a copy and becomes +0 when stored as a sum with zero
+	CHECK(std::signbit(copy[0]));
+	CHECK(!std::signbit(stored[0]));
+	CHECK_THROWS_AS(t.transpose_into({1, 0}, copy.data(), Tensor::Combine::kCopy), TensorShapeError);
+}

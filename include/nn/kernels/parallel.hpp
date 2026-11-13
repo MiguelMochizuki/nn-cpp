@@ -34,6 +34,26 @@ size_t num_threads();
 void set_num_threads(size_t n);
 
 /**
+ * How long, in microseconds, an idle pool worker (and a caller waiting for its job) busy-waits
+ * before it blocks. Defaults to the NN_SPIN_US environment variable when it is a non-negative
+ * integer, otherwise 100. Spinning only trades idle CPU time for wake-up latency; it never changes
+ * a result.
+ *
+ * Returns size_t: The spin budget, between 0 (always block) and 10000
+ */
+size_t spin_microseconds();
+
+/**
+ * Sets the spin budget of the pool. Takes effect from the next wait of each thread.
+ *
+ * Parameters:
+ * size_t us: Microseconds to busy-wait before blocking; 0 disables spinning, values above 10000 are clamped
+ *
+ * Returns void
+ */
+void set_spin_microseconds(size_t us);
+
+/**
  * Runs fn(0) .. fn(n_chunks - 1), each exactly once, and returns when all
  * have finished. The calling thread takes part; chunks are claimed from a
  * shared counter, so which thread runs which chunk varies between runs and

@@ -71,7 +71,7 @@ std::vector<size_t> to_labels(const Tensor& ids) {
 std::vector<size_t> argmax_rows(const Tensor& logits) {
 	if (logits.shape().size() != 2 || logits.shape()[1] == 0) throw std::invalid_argument("argmax_rows: expected shape {N, C}");
 	const size_t n = logits.shape()[0], c = logits.shape()[1];
-	const std::vector<float>& d = logits.data();
+	const Storage& d = logits.data();
 	std::vector<size_t> out(n, 0);
 	for (size_t i = 0; i < n; i++) {
 		for (size_t k = 1; k < c; k++) {

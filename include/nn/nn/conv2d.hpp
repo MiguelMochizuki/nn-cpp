@@ -62,6 +62,23 @@ public:
 	 * Returns Value: shape {N, out_channels, H_out, W_out}; input must be {N, in_channels, H, W}
 	 */
 	Value forward(const Value& input) override;
+
+	/* Public, convolution and ReLU in one op
+	 *
+	 * Parameters: none
+	 *
+	 * Returns bool: true when dilation and groups are both 1 (the plain im2col path)
+	 */
+	bool can_fuse_relu() const override { return dilation_ == 1 && groups_ == 1; }
+
+	/* Public, relu(forward(input)) as one op
+	 *
+	 * Parameters:
+	 * Value input: input {N, C_in, H, W}
+	 *
+	 * Returns Value: the activated output, same shape as forward(input)
+	 */
+	Value forward_relu(const Value& input) override;
 	/* Public, list the trainable parameters
 	 *
 	 * Parameters: none

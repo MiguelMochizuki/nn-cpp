@@ -66,6 +66,7 @@ private:
  * Attributes:
  * Tensor data: forward value
  * Tensor grad: accumulated dL/d(data), same shape as data (a non-leaf node holds an empty placeholder until backward() sizes it)
+ * bool grad_fresh: grad has its final shape but no contents yet; it stands for all zeros until the first write
  * bool requires_grad: whether this node participates in backward
  * vector<Value> parents: inputs this node was computed from
  * function<void(const Tensor&)> backward_fn: given dL/d(this.data), accumulate into each parent's grad
@@ -73,6 +74,7 @@ private:
 struct NodeImpl {
 	Tensor data;
 	Tensor grad;
+	bool grad_fresh = false;
 	bool requires_grad;
 	std::vector<Value> parents;
 	std::function<void(const Tensor&)> backward_fn;
@@ -139,6 +141,20 @@ public:
 	 * an empty placeholder (shape {0}) until backward() reaches that node
 	 */
 	Tensor& grad() const&;
+
+	/* Public, the gradient buffer for a backward rule that contributes to every element of it.
+	 * backward() does not zero the gradient of a non-leaf node up front: the first contribution
+	 * stores into it and only later ones add, which saves one pass over the buffer per node.
+	 * A rule that cannot overwrite every element uses grad() instead, which zeroes on demand.
+	 *
+	 * Parameters:
+	 * bool& first: set to true when the buffer holds nothing yet. The caller must then write
+	 * every element, as contribution + 0.0f so the stored bits equal those of adding to zero
+	 * (-0 becomes +0); when false the caller adds
+	 *
+	 * Returns Tensor&: reference to the node's grad
+	 */
+	Tensor& grad_accum(bool& first) const;
 
 	/* Public, accumulated gradient of a temporary Value, by copy; see data() &&
 	 *

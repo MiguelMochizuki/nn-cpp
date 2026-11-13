@@ -7,6 +7,7 @@
 #include "doctest/doctest.h"
 #include "nn/kernels/gemm.hpp"
 #include "nn/kernels/parallel.hpp"
+#include "nn/kernels/vmath.hpp"
 #include "reference_gemm.hpp"
 
 #include <cmath>
@@ -400,4 +401,60 @@ TEST_CASE("sgemm with a parallel B pack is bitwise identical across thread count
 				CHECK(std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0);
 			}
 		}
+}
+
+TEST_CASE("sgemm cuts a small deep product into pieces: matches the reference, same bits for any thread count") {
+	struct Restore {
+		size_t saved = num_threads();
+		~Restore() { set_num_threads(saved); }
+	} restore;
+	// Small m x n with a depth of at least two depth blocks, whole and ragged, and the same
+	// shapes just under the thresholds, which take the ordinary path
+	struct Dims { size_t m, n, k; };
+	const Dims cases[] = {{64, 64, 4 * kKC}, {40, 48, 2 * kKC + 77}, {7, 300, 3 * kKC}, {64, 64, 2 * kKC - 1}, {300, 300, 2 * kKC}};
+	unsigned seed = 30000;
+	for (Gemm fn : {static_cast<Gemm>(sgemm), static_cast<Gemm>(sgemm_portable)})
+		for (int ta = 0; ta < 2; ++ta)
+			for (int tb = 0; tb < 2; ++tb)
+				for (int acc = 0; acc < 2; ++acc)
+					for (const Dims& d : cases) {
+						Problem p = make_problem(ta, tb, d.m, d.n, d.k, 3, seed++);
+						set_num_threads(1);
+						std::vector<float> want = p.c;
+						fn(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb, want.data(), p.ldc, acc);
+						for (size_t t : {2, 3, 8}) {
+							set_num_threads(t);
+							std::vector<float> got = p.c;
+							fn(p.ta, p.tb, p.m, p.n, p.k, p.a.data(), p.lda, p.b.data(), p.ldb, got.data(), p.ldc, acc);
+							INFO("threads=", t, " ta=", ta, " tb=", tb, " acc=", acc, " m=", d.m, " n=", d.n, " k=", d.k);
+							CHECK(std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0);
+						}
+						set_num_threads(1);
+						check(p, acc, fn);
+					}
+}
+
+TEST_CASE("tanh_inplace gives tanh_one's bits at every position and stays within 2e-7 of std::tanh") {
+	std::vector<float> xs;
+	for (float x = -12.0f; x <= 12.0f; x += 0.0037f) xs.push_back(x);
+	for (float x : {0.0f, -0.0f, 1e-30f, -1e-8f, 9.0f, -9.0f, 50.0f, -50.0f, 1e30f, -1e30f}) xs.push_back(x);
+	// Every start offset and a length that is not a multiple of the vector width
+	for (size_t off = 0; off < 9; ++off) {
+		std::vector<float> got(xs.begin() + off, xs.end() - 3);
+		tanh_inplace(got.data(), got.size());
+		size_t bad_bits = 0, bad_value = 0;
+		for (size_t i = 0; i < got.size(); ++i) {
+			const float one = tanh_one(xs[i + off]);
+			if (std::memcmp(&one, &got[i], sizeof one) != 0) ++bad_bits;
+			if (std::fabs(static_cast<double>(got[i]) - std::tanh(static_cast<double>(xs[i + off]))) > 2e-7) ++bad_value;
+		}
+		CHECK(bad_bits == 0);
+		CHECK(bad_value == 0);
+	}
+	CHECK(tanh_one(std::numeric_limits<float>::infinity()) == 1.0f);
+	CHECK(tanh_one(-std::numeric_limits<float>::infinity()) == -1.0f);
+	float nans[9];
+	for (float& v : nans) v = std::numeric_limits<float>::quiet_NaN();
+	tanh_inplace(nans, 9);
+	for (float v : nans) CHECK(std::isnan(v));
 }

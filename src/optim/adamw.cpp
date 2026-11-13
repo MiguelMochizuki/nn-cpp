@@ -5,6 +5,7 @@
  */
 
 #include "nn/optim/adamw.hpp"
+#include "nn/kernels/parallel.hpp"
 
 namespace nn {
 
@@ -14,7 +15,10 @@ AdamW::AdamW(std::vector<Value> params, float lr, float beta1, float beta2, floa
 void AdamW::step() {
 	const float shrink = 1.0f - lr_ * weight_decay_;
 	for (Value& p : params_) {
-		for (float& w : p.data().data()) w *= shrink;
+		float* w = p.data().data().data();
+		kernels::parallel_range(p.data().size(), size_t(1) << 13, [=](size_t lo, size_t hi) {
+			for (size_t k = lo; k < hi; k++) w[k] *= shrink;
+		});
 	}
 	Adam::step();
 }
