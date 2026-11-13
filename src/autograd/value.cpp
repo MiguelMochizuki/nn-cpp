@@ -46,8 +46,22 @@ Value Value::node(Tensor data, std::vector<Value> parents, std::function<void(co
 
 Tensor& Value::data() const& { return impl_->data; }
 Tensor Value::data() && { return impl_->data; }
-Tensor& Value::grad() const& { return impl_->grad; }
-Tensor Value::grad() && { return impl_->grad; }
+Tensor& Value::grad() const& {
+	// A gradient nobody stored into yet stands for zeros; make that real for a reader or a partial writer
+	if (impl_->grad_fresh) {
+		impl_->grad.zero_();
+		impl_->grad_fresh = false;
+	}
+	return impl_->grad;
+}
+
+Tensor Value::grad() && { return static_cast<const Value&>(*this).grad(); }
+
+Tensor& Value::grad_accum(bool& first) const {
+	first = impl_->grad_fresh;
+	impl_->grad_fresh = false;
+	return impl_->grad;
+}
 bool Value::requires_grad() const { return impl_->requires_grad; }
 bool Value::has_grad() const { return impl_->grad.shape() == impl_->data.shape(); }
 NodeImpl* Value::impl() const { return impl_.get(); }
@@ -58,6 +72,7 @@ void Value::zero_grad() const {
 	} else {
 		impl_->grad.zero_();
 	}
+	impl_->grad_fresh = false;
 }
 
 size_t Value::live_node_count() { return g_live_node_count; }
@@ -95,11 +110,11 @@ void Value::backward() const {
 
 	for (const Value& v : topo_order) {
 		if (v.impl()->backward_fn) {
+			// Not zeroed here: the first backward rule that reaches the node stores into it (see grad_accum)
 			if (v.impl()->grad.shape() != v.impl()->data.shape()) {
-				v.impl()->grad = Tensor(v.impl()->data.shape(), 0.0f);
-			} else {
-				v.impl()->grad.zero_();
+				v.impl()->grad = Tensor::empty(v.impl()->data.shape());
 			}
+			v.impl()->grad_fresh = true;
 		}
 	}
 	if (impl_->grad.shape() != impl_->data.shape()) {
@@ -107,6 +122,7 @@ void Value::backward() const {
 	} else {
 		std::fill(impl_->grad.data().begin(), impl_->grad.data().end(), 1.0f);
 	}
+	impl_->grad_fresh = false;
 
 	for (auto it = topo_order.rbegin(); it != topo_order.rend(); ++it) {
 		if (it->impl()->backward_fn) {

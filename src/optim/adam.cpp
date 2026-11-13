@@ -6,6 +6,8 @@
 
 #include "nn/optim/adam.hpp"
 
+#include "nn/kernels/parallel.hpp"
+
 #include <cmath>
 #include <string>
 
@@ -24,15 +26,19 @@ void Adam::step() {
 	const float c1 = 1.0f - std::pow(beta1_, static_cast<float>(t_));
 	const float c2 = 1.0f - std::pow(beta2_, static_cast<float>(t_));
 	for (size_t i = 0; i < params_.size(); i++) {
-		std::vector<float>& w = params_[i].data().data();
-		const std::vector<float>& g = params_[i].grad().data();
-		std::vector<float>& m = m_[i].data();
-		std::vector<float>& v = v_[i].data();
-		for (size_t k = 0; k < w.size(); k++) {
-			m[k] = beta1_ * m[k] + (1.0f - beta1_) * g[k];
-			v[k] = beta2_ * v[k] + (1.0f - beta2_) * g[k] * g[k];
-			w[k] -= lr_ * (m[k] / c1) / (std::sqrt(v[k] / c2) + eps_);
-		}
+		float* w = params_[i].data().data().data();
+		const float* g = params_[i].grad().data().data();
+		float* m = m_[i].data().data();
+		float* v = v_[i].data().data();
+		const float b1 = beta1_, b2 = beta2_, lr = lr_, eps = eps_;
+		// Elements are independent, so ranges run on different threads without changing any result
+		kernels::parallel_range(params_[i].data().size(), size_t(1) << 13, [=](size_t lo, size_t hi) {
+			for (size_t k = lo; k < hi; k++) {
+				m[k] = b1 * m[k] + (1.0f - b1) * g[k];
+				v[k] = b2 * v[k] + (1.0f - b2) * g[k] * g[k];
+				w[k] -= lr * (m[k] / c1) / (std::sqrt(v[k] / c2) + eps);
+			}
+		});
 	}
 }
 

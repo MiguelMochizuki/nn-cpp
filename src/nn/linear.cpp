@@ -22,7 +22,7 @@ Linear::Linear(size_t in_features, size_t out_features)
 	  bias_(Value::leaf(Tensor::zeros({out_features}), true)) {}
 
 Value Linear::forward(const Value& input) {
-	return add(matmul_bt(input, weight_), bias_);
+	return linear(input, weight_, bias_);
 }
 
 std::vector<Value> Linear::parameters() const { return {weight_, bias_}; }

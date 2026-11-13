@@ -26,22 +26,33 @@ for (int epoch = 0; epoch < 2000; epoch++) {
 ## Highlights
 
 - **Autograd is the only place gradients are written.** A layer implements `forward()` out of differentiable ops and gets its backward pass for free. Each op has a finite-difference gradient check.
-- **Fast where it counts.** A BLIS-style blocked GEMM (AVX2/FMA, SSE2 or portable) on a deterministic thread pool. Results are bitwise identical for any thread count.
+- **Fast where it counts.** A BLIS-style blocked GEMM (AVX2/FMA, SSE2 or portable) on a deterministic thread pool, with fused `linear`, `attention`, `conv2d_relu`, `batchnorm` and `layernorm` ops, and faster than PyTorch's CPU eager mode on most of the bundled workloads (native build). Results are bitwise identical for any thread count.
 - **Built to train real models.** BatchNorm, Dropout, AdamW, LR schedulers, gradient clipping, seeding, train/eval modes, checkpoints to resume training, and a `Dataset`/`DataLoader` pipeline with transforms.
 - **Small and portable.** One static library plus headers, packaged for Linux, macOS and Windows on x86-64 and ARM64. Install it and `find_package(nn_cpp)`.
 
 ## Speed
 
-Training-step time against the first measured baseline, on an Intel i5-12450HX (8 threads, pinned). Native is `-DNN_NATIVE=ON`; portable is the default build.
+Training-step time on an Intel i5-12450HX (8 threads, pinned, on mains power). Native is `-DNN_NATIVE=ON`; portable is the default build. "Baseline" is the first measured version of this library.
 
 | workload | native | portable |
 |---|---|---|
-| `cnn_mnist` (small CNN) | 17.63 → 2.64 ms (**6.7x**) | 20.39 → 3.88 ms (5.3x) |
-| `mlp_wide` (wide MLP, large GEMMs) | 173.48 → 14.18 ms (**12.2x**) | 215.13 → 26.56 ms (8.1x) |
-| `mlp_adam` (MLP with Adam) | 171.24 → 16.39 ms (**10.4x**) | 228.33 → 29.01 ms (7.9x) |
-| `cnn_large` | 1030.92 → 250.22 ms (**4.1x**) | 1180.54 → 304.10 ms (3.9x) |
+| `cnn_mnist` (small CNN) | 17.63 → 0.59 ms (**29.9x**) | 20.39 → 1.10 ms (18.5x) |
+| `mlp_wide` (wide MLP, large GEMMs) | 173.48 → 8.28 ms (**20.9x**) | 215.13 → 21.15 ms (10.2x) |
+| `mlp_adam` (MLP with Adam) | 171.24 → 8.81 ms (**19.4x**) | 228.33 → 22.22 ms (10.3x) |
+| `cnn_large` | 1030.92 → 48.12 ms (**21.4x**) | 1180.54 → 85.95 ms (13.7x) |
 
-On real MNIST (3 epochs, 8 threads) `train_mnist` reaches 98.58% test accuracy in 17.8 s native and 98.43% in 46.3 s portable; the unoptimised baseline needed about 1:42 on one thread. Method, profiles and raw CSVs are in [docs/performance](docs/performance/README.md).
+Against PyTorch 2.15 (CPU, eager, same six workloads, same machine and protocol; below 1.00 means nn-cpp is faster):
+
+| workload | PyTorch | native | portable |
+|---|---|---|---|
+| `mlp_wide` | 8.24 ms | 8.28 ms (1.00x, a tie) | 21.15 ms (2.57x) |
+| `mlp_adam` | 9.80 ms | 8.81 ms (**0.90x**) | 22.22 ms (2.27x) |
+| `cnn_mnist` | 1.29 ms | 0.59 ms (**0.46x**) | 1.10 ms (**0.85x**) |
+| `cnn_fer` | 20.51 ms | 15.01 ms (**0.73x**) | 24.61 ms (1.20x) |
+| `cnn_large` | 72.66 ms | 48.12 ms (**0.66x**) | 85.95 ms (1.18x) |
+| `transformer_tiny` | 6.24 ms | 4.56 ms (**0.73x**) | 8.56 ms (1.37x) |
+
+The native build wins five of six and ties the sixth; the portable build, which has no AVX2 microkernel, wins only `cnn_mnist`. PyTorch runs on MKL and oneDNN, and with 4 threads instead of 8 PyTorch reaches 7.59 ms on `mlp_wide`, so that tie is within the noise. The comparison is one CPU and one model of each workload, not a general claim. On real MNIST (3 epochs, measured at v1.3.0) `train_mnist` reached 98.58% test accuracy in 17.8 s native and 98.43% in 46.3 s portable. Method, profiles and raw CSVs are in [docs/performance](docs/performance/README.md).
 
 ## What is inside
 

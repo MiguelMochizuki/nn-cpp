@@ -9,9 +9,12 @@
 #include "nn/autograd/ops.hpp"
 #include "gradcheck.hpp"
 #include "nn/kernels/parallel.hpp"
+#include "nn/random.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <functional>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -460,7 +463,7 @@ TEST_CASE("conv2d matches a direct convolution on odd sizes and its results do n
 		Tensor wv = patterned({c.Cout, c.Cin, c.k, c.k}, 0.05f);
 		Tensor bv = patterned({c.Cout}, 0.1f);
 		Tensor expect = reference_conv(xv, wv, bv, c.stride, c.pad);
-		std::vector<float> out1, gx1, gw1, gb1;
+		Storage out1, gx1, gw1, gb1;
 		for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
 			nn::kernels::set_num_threads(threads);
 			Value x = Value::leaf(xv, true), w = Value::leaf(wv, true), b = Value::leaf(bv, true);
@@ -489,7 +492,7 @@ TEST_CASE("maxpool2d forward and backward are identical for any thread count and
 	for (size_t k : {size_t{1}, size_t{2}, size_t{3}}) {
 		for (size_t stride : {size_t{1}, size_t{2}}) {
 			Tensor xv = patterned({7, 3, 12, 9}, 0.31f);
-			std::vector<float> out1, g1;
+			Storage out1, g1;
 			for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
 				nn::kernels::set_num_threads(threads);
 				Value x = Value::leaf(xv, true);
@@ -960,7 +963,7 @@ TEST_CASE("avgpool2d forward and backward are bitwise identical for any thread c
 	for (size_t k : {size_t{1}, size_t{2}, size_t{3}}) {
 		for (size_t stride : {size_t{1}, size_t{2}}) {
 			Tensor xv = patterned({7, 3, 12, 9}, 0.31f);
-			std::vector<float> out1, g1;
+			Storage out1, g1;
 			for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
 				nn::kernels::set_num_threads(threads);
 				Value x = Value::leaf(xv, true);
@@ -1033,7 +1036,7 @@ TEST_CASE("conv2d general path matches a direct reference and is independent of 
 		Tensor wv = patterned({c.Cout, c.Cin / c.groups, c.kh, c.kw}, 0.05f);
 		Tensor bv = patterned({c.Cout}, 0.1f);
 		Tensor expect = reference_conv_general(xv, wv, bv, c.stride, c.pad, c.dil, c.groups);
-		std::vector<float> gx1, gw1, gb1;
+		Storage gx1, gw1, gb1;
 		for (size_t threads : {size_t{1}, size_t{3}, size_t{8}}) {
 			nn::kernels::set_num_threads(threads);
 			Value x = Value::leaf(xv, true), w = Value::leaf(wv, true), b = Value::leaf(bv, true);
@@ -1260,13 +1263,13 @@ TEST_CASE("masked_fill forward and gradient") {
 	Value x = Value::leaf(Tensor({2, 3}, std::vector<float>{1, 2, 3, 4, 5, 6}), true);
 	Tensor mask({1, 3}, std::vector<float>{0, 1, 0});
 	Value y = masked_fill(x, mask, -1e9f);
-	const std::vector<float>& d = y.data().data();
+	const Storage& d = y.data().data();
 	CHECK(d[0] == 1.0f);
 	CHECK(d[1] == -1e9f);
 	CHECK(d[2] == 3.0f);
 	CHECK(d[4] == -1e9f);
 	sum(y).backward();
-	const std::vector<float>& g = x.grad().data();
+	const Storage& g = x.grad().data();
 	CHECK(g == std::vector<float>{1, 0, 1, 1, 0, 1});
 	CHECK_THROWS_AS(masked_fill(x, Tensor({4}, 1.0f), 0.0f), TensorShapeError);
 	CHECK_THROWS_AS(masked_fill(x, Tensor({3, 2, 3}, 1.0f), 0.0f), TensorShapeError);
@@ -1348,4 +1351,349 @@ TEST_CASE("split inverts concat bit for bit and oversized mask dim is rejected")
 	CHECK(halves[1].data().data() == a.data().data());
 	Value x = Value::leaf(Tensor({1, 3}, 1.0f), false);
 	CHECK_THROWS_AS(masked_fill(x, Tensor({2, 3}, 1.0f), 0.0f), TensorShapeError);
+}
+
+TEST_CASE("fused batchnorm and layernorm match the composed ops and ignore the thread count") {
+	struct Restore {
+		size_t saved = kernels::num_threads();
+		~Restore() { kernels::set_num_threads(saved); }
+	} restore;
+	manual_seed(3);
+	const float eps = 1e-5f;
+	auto max_diff = [](const Storage& a, const Storage& b) {
+		float d = 0.0f;
+		for (size_t i = 0; i < a.size(); i++) d = std::max(d, std::fabs(a[i] - b[i]));
+		return d;
+	};
+
+	// Batch norm over {N, C, H, W}: the composed formula is what BatchNorm used before it was fused
+	const size_t N = 6, C = 5, H = 7, W = 9;
+	Tensor xt = Tensor::random({N, C, H, W}, -2.0f, 3.0f), wt = Tensor::random({C}, 0.5f, 1.5f), bt = Tensor::random({C}, -1.0f, 1.0f);
+	Tensor probe = Tensor::random({N, C, H, W}, 0.5f, 2.0f);
+	auto composed_bn = [&](Value x, Value w, Value b) {
+		Value mu = x;
+		for (int axis : {3, 2, 0}) mu = mean(mu, axis, true);
+		Value c = sub(x, mu);
+		Value var = mul(c, c);
+		for (int axis : {3, 2, 0}) var = mean(var, axis, true);
+		Value inv = rsqrt(add(var, Value::leaf(Tensor({1, C, 1, 1}, eps))));
+		return add(mul(mul(c, inv), reshape(w, {1, C, 1, 1})), reshape(b, {1, C, 1, 1}));
+	};
+	auto run_bn = [&](bool fused, size_t threads) {
+		kernels::set_num_threads(threads);
+		Value x = Value::leaf(xt, true), w = Value::leaf(wt, true), b = Value::leaf(bt, true);
+		Value y = fused ? batchnorm(x, w, b, eps) : composed_bn(x, w, b);
+		sum(mul(y, Value::leaf(probe, false))).backward();
+		return std::vector<Storage>{y.data().data(), x.grad().data(), w.grad().data(), b.grad().data()};
+	};
+	auto ref = run_bn(false, 1), one = run_bn(true, 1), four = run_bn(true, 4);
+	for (size_t i = 0; i < ref.size(); i++) CHECK(max_diff(ref[i], one[i]) < 2e-3f);
+	CHECK(one == four);
+
+	// Layer norm over the last axis of {40, 30, 16}
+	const size_t D = 16;
+	Tensor lx = Tensor::random({40, 30, D}, -2.0f, 3.0f), gt = Tensor::random({D}, 0.5f, 1.5f), betat = Tensor::random({D}, -1.0f, 1.0f);
+	Tensor lprobe = Tensor::random({40, 30, D}, 0.5f, 2.0f);
+	auto composed_ln = [&](Value x, Value g, Value b) {
+		Value c = sub(x, mean(x, 2, true));
+		Value var = mean(mul(c, c), 2, true);
+		return add(mul(mul(c, rsqrt(add(var, Value::leaf(Tensor({1, 1, 1}, eps))))), g), b);
+	};
+	auto run_ln = [&](bool fused, size_t threads) {
+		kernels::set_num_threads(threads);
+		Value x = Value::leaf(lx, true), g = Value::leaf(gt, true), b = Value::leaf(betat, true);
+		Value y = fused ? layernorm(x, g, b, eps) : composed_ln(x, g, b);
+		sum(mul(y, Value::leaf(lprobe, false))).backward();
+		return std::vector<Storage>{y.data().data(), x.grad().data(), g.grad().data(), b.grad().data()};
+	};
+	auto lref = run_ln(false, 1), lone = run_ln(true, 1), lfour = run_ln(true, 4);
+	for (size_t i = 0; i < lref.size(); i++) CHECK(max_diff(lref[i], lone[i]) < 2e-3f);
+	CHECK(lone == lfour);
+}
+
+TEST_CASE("scaled_masked_softmax matches scale, masked_fill and softmax and ignores the thread count") {
+	struct Restore {
+		size_t saved = kernels::num_threads();
+		~Restore() { kernels::set_num_threads(saved); }
+	} restore;
+	manual_seed(4);
+	const size_t N = 3, H = 4, T = 40;
+	const float sc = 0.37f;
+	Tensor st = Tensor::random({N, H, T, T}, -3.0f, 3.0f), probe = Tensor::random({N, H, T, T}, 0.5f, 2.0f);
+	Tensor pad = Tensor::ones({N, T});
+	for (size_t j = 30; j < T; j++) pad.data()[1 * T + j] = 0.0f;  // sample 1 has 10 padded keys
+	for (size_t j = 0; j < T; j++) pad.data()[2 * T + j] = 0.0f;   // sample 2 is padded everywhere
+	Tensor pmask = Tensor::zeros({N, 1, 1, T}), cmask = Tensor::zeros({1, 1, T, T});
+	for (size_t e = 0; e < N * T; e++) pmask.data()[e] = pad.data()[e] == 0.0f ? 1.0f : 0.0f;
+	for (size_t i = 0; i < T; i++)
+		for (size_t j = i + 1; j < T; j++) cmask.data()[i * T + j] = 1.0f;
+
+	for (bool causal : {false, true}) {
+		auto run = [&](bool fused, size_t threads) {
+			kernels::set_num_threads(threads);
+			Value x = Value::leaf(st, true);
+			Value y = fused ? scaled_masked_softmax(x, sc, pad, causal) : [&] {
+				Value s = masked_fill(scale(x, sc), pmask, -1e9f);
+				if (causal) s = masked_fill(s, cmask, -2e9f);
+				return softmax(s, 3);
+			}();
+			sum(mul(y, Value::leaf(probe, false))).backward();
+			return std::vector<Storage>{y.data().data(), x.grad().data()};
+		};
+		auto ref = run(false, 1), one = run(true, 1), four = run(true, 4);
+		CHECK(ref[0] == one[0]);  // same operations in the same order: forward is bitwise equal
+		float d = 0.0f;
+		for (size_t i = 0; i < ref[1].size(); i++) d = std::max(d, std::fabs(ref[1][i] - one[1][i]));
+		CHECK(d < 1e-5f);
+		CHECK(one == four);
+	}
+}
+
+TEST_CASE("matmul and matmul_bt with a batched left operand and a plain matrix: values and gradients") {
+	manual_seed(6);
+	const size_t N = 3, T = 4, K = 5, E = 6;
+	Tensor xt = Tensor::random({N, T, K}, -1.0f, 1.0f), wt = Tensor::random({K, E}, -1.0f, 1.0f), wbt = Tensor::random({E, K}, -1.0f, 1.0f);
+
+	// The folded forward equals one product per sample
+	Tensor folded = matmul(xt, wt), folded_bt = matmul(xt, wbt, false, true);
+	CHECK(folded.shape() == std::vector<size_t>{N, T, E});
+	for (size_t b = 0; b < N; b++) {
+		Tensor xs({T, K});
+		for (size_t i = 0; i < T * K; i++) xs.data()[i] = xt.data()[b * T * K + i];
+		Tensor ref = matmul(xs, wt), ref_bt = matmul(xs, wbt, false, true);
+		for (size_t i = 0; i < T * E; i++) {
+			CHECK(std::fabs(folded.data()[b * T * E + i] - ref.data()[i]) < 1e-5f);
+			CHECK(std::fabs(folded_bt.data()[b * T * E + i] - ref_bt.data()[i]) < 1e-5f);
+		}
+	}
+
+	// Gradients that accumulate straight into grad() match finite differences, and add to what is there
+	Tensor probe = Tensor::random({N, T, E}, 0.5f, 1.5f);
+	Value x = Value::leaf(xt, true), w = Value::leaf(wt, true), wb = Value::leaf(wbt, true);
+	auto loss_mm = [&](Value in, Value wv) { return sum(mul(matmul(in, wv), Value::leaf(probe, false))); };
+	auto loss_bt = [&](Value in, Value wv) { return sum(mul(matmul_bt(in, wv), Value::leaf(probe, false))); };
+	CHECK(gradcheck([&](Value v) { return loss_mm(v, w); }, x));
+	CHECK(gradcheck([&](Value v) { return loss_mm(x, v); }, w));
+	CHECK(gradcheck([&](Value v) { return loss_bt(v, wb); }, x));
+	CHECK(gradcheck([&](Value v) { return loss_bt(x, v); }, wb));
+
+	w.zero_grad();
+	loss_mm(x, w).backward();
+	Storage once = w.grad().data();
+	loss_mm(x, w).backward();  // a second backward must add to the first, not overwrite it
+	for (size_t i = 0; i < once.size(); i++) CHECK(std::fabs(w.grad().data()[i] - 2.0f * once[i]) < 1e-4f);
+}
+
+namespace {
+
+/**
+ * Runs f under each thread count and checks the forward data and the leaf gradients are bitwise equal
+ *
+ * Parameters:
+ * function<Value()> f: Builds a scalar loss from the leaves
+ * vector<Value> leaves: Leaves whose gradients are compared
+ *
+ * Returns bool: true when every thread count gives the bits of the single-threaded run
+ */
+bool same_bits_for_any_thread_count(const std::function<Value()>& f, const std::vector<Value>& leaves) {
+	const size_t saved = kernels::num_threads();
+	std::vector<std::vector<float>> want;
+	bool ok = true;
+	for (size_t t : {1, 2, 3, 8}) {
+		kernels::set_num_threads(t);
+		for (const Value& l : leaves) l.zero_grad();
+		Value loss = f();
+		loss.backward();
+		std::vector<std::vector<float>> got;
+		got.emplace_back(loss.data().data().begin(), loss.data().data().end());
+		for (const Value& l : leaves) got.emplace_back(l.grad().data().begin(), l.grad().data().end());
+		if (t == 1) {
+			want = got;
+			continue;
+		}
+		for (size_t i = 0; i < got.size(); i++)
+			ok = ok && got[i].size() == want[i].size() &&
+				std::memcmp(got[i].data(), want[i].data(), got[i].size() * sizeof(float)) == 0;
+	}
+	kernels::set_num_threads(saved);
+	return ok;
+}
+
+/**
+ * The attention core built from the basic ops, the reference for the fused attention op
+ *
+ * Parameters:
+ * Value q, k, v: {N, T, D} operands
+ * size_t heads: Number of heads
+ * Tensor mask: Key padding mask, or an empty tensor
+ * bool causal: Hide later keys
+ *
+ * Returns Value: {N, Tq, D}
+ */
+Value composed_attention(const Value& q, const Value& k, const Value& v, size_t heads, const Tensor& mask, bool causal) {
+	const size_t N = q.data().shape()[0], Tq = q.data().shape()[1], Tk = k.data().shape()[1], D = q.data().shape()[2];
+	const size_t Dh = D / heads;
+	auto split = [&](const Value& x, size_t T) { return transpose(reshape(x, {N, T, heads, Dh}), {0, 2, 1, 3}); };
+	Value w = scaled_masked_softmax(matmul_bt(split(q, Tq), split(k, Tk)), 1.0f / std::sqrt(static_cast<float>(Dh)), mask, causal);
+	return reshape(transpose(matmul(w, split(v, Tk)), {0, 2, 1, 3}), {N, Tq, D});
+}
+
+}  // namespace
+
+TEST_CASE("linear gradcheck for input, weight and bias") {
+	Value x = Value::leaf(sine_tensor({2, 5, 3}, 0.3f), true);
+	Value w = Value::leaf(sine_tensor({4, 3}, 0.7f), true);
+	Value b = Value::leaf(sine_tensor({4}, 1.1f), true);
+	CHECK(gradcheck([w, b](Value v) mutable { return weighted_sum(linear(v, w, b)); }, x));
+	CHECK(gradcheck([x, b](Value v) mutable { return weighted_sum(linear(x, v, b)); }, w));
+	CHECK(gradcheck([x, w](Value v) mutable { return weighted_sum(linear(x, w, v)); }, b));
+}
+
+TEST_CASE("linear gives the bits of matmul_bt followed by add, forward and backward") {
+	for (std::vector<size_t> xs : {std::vector<size_t>{7, 5}, std::vector<size_t>{3, 6, 5}}) {
+		Value x = Value::leaf(sine_tensor(xs, 0.3f), true);
+		Value w = Value::leaf(sine_tensor({9, 5}, 0.7f), true);
+		Value b = Value::leaf(sine_tensor({9}, 1.1f), true);
+		Value fused = linear(x, w, b);
+		weighted_sum(fused).backward();
+		std::vector<std::vector<float>> got;
+		for (const Value& l : {x, w, b}) got.emplace_back(l.grad().data().begin(), l.grad().data().end());
+		for (const Value& l : {x, w, b}) l.zero_grad();
+		Value composed = add(matmul_bt(x, w), b);
+		weighted_sum(composed).backward();
+		CHECK(fused.data().shape() == composed.data().shape());
+		CHECK(std::memcmp(fused.data().data().data(), composed.data().data().data(), fused.data().size() * sizeof(float)) == 0);
+		size_t i = 0;
+		for (const Value& l : {x, w, b}) {
+			CHECK(std::memcmp(got[i].data(), l.grad().data().data(), got[i].size() * sizeof(float)) == 0);
+			i++;
+		}
+	}
+}
+
+TEST_CASE("linear throws on mismatched shapes") {
+	Value w = Value::leaf(Tensor({4, 3}), true);
+	Value b = Value::leaf(Tensor({4}), true);
+	CHECK_THROWS_AS(linear(Value::leaf(Tensor({3})), w, b), TensorShapeError);
+	CHECK_THROWS_AS(linear(Value::leaf(Tensor({2, 5})), w, b), TensorShapeError);
+	CHECK_THROWS_AS(linear(Value::leaf(Tensor({2, 3})), w, Value::leaf(Tensor({3}))), TensorShapeError);
+}
+
+TEST_CASE("attention gradcheck for queries, keys and values, causal and padded") {
+	Tensor mask({2, 4}, std::vector<float>{1, 1, 1, 0, 1, 1, 1, 1});
+	for (bool causal : {false, true}) {
+		Value q = Value::leaf(sine_tensor({2, 4, 6}, 0.3f), true);
+		Value k = Value::leaf(sine_tensor({2, 4, 6}, 0.7f), true);
+		Value v = Value::leaf(sine_tensor({2, 4, 6}, 1.3f), true);
+		CHECK(gradcheck([k, v, mask, causal](Value t) mutable { return weighted_sum(attention(t, k, v, 2, mask, causal)); }, q));
+		CHECK(gradcheck([q, v, mask, causal](Value t) mutable { return weighted_sum(attention(q, t, v, 2, mask, causal)); }, k));
+		CHECK(gradcheck([q, k, mask, causal](Value t) mutable { return weighted_sum(attention(q, k, t, 2, mask, causal)); }, v));
+	}
+	// One node as query, key and value: its gradient is the sum of the three roles
+	Value x = Value::leaf(sine_tensor({2, 4, 6}, 0.5f), true);
+	CHECK(gradcheck([](Value t) { return weighted_sum(attention(t, t, t, 3, Tensor::empty({0}), true)); }, x));
+}
+
+TEST_CASE("attention gives the bits of the composed ops, forward and backward") {
+	Tensor mask({3, 5}, std::vector<float>{1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0});
+	struct Case { size_t tq, tk; bool causal, padded; };
+	for (Case c : {Case{5, 5, true, false}, Case{5, 5, true, true}, Case{4, 5, false, true}, Case{5, 5, false, false}}) {
+		Value q = Value::leaf(sine_tensor({3, c.tq, 8}, 0.3f), true);
+		Value k = Value::leaf(sine_tensor({3, c.tk, 8}, 0.7f), true);
+		Value v = Value::leaf(sine_tensor({3, c.tk, 8}, 1.3f), true);
+		const Tensor m = c.padded ? mask : Tensor::empty({0});
+		Value fused = attention(q, k, v, 4, m, c.causal);
+		weighted_sum(fused).backward();
+		std::vector<std::vector<float>> got;
+		for (const Value& l : {q, k, v}) got.emplace_back(l.grad().data().begin(), l.grad().data().end());
+		for (const Value& l : {q, k, v}) l.zero_grad();
+		Value composed = composed_attention(q, k, v, 4, m, c.causal);
+		weighted_sum(composed).backward();
+		CHECK(fused.data().shape() == composed.data().shape());
+		CHECK(std::memcmp(fused.data().data().data(), composed.data().data().data(), fused.data().size() * sizeof(float)) == 0);
+		size_t i = 0;
+		for (const Value& l : {q, k, v}) {
+			CHECK(std::memcmp(got[i].data(), l.grad().data().data(), got[i].size() * sizeof(float)) == 0);
+			i++;
+		}
+	}
+}
+
+TEST_CASE("attention and linear are bitwise identical for any thread count") {
+	Value q = Value::leaf(sine_tensor({9, 16, 32}, 0.3f), true);
+	Value k = Value::leaf(sine_tensor({9, 16, 32}, 0.7f), true);
+	Value v = Value::leaf(sine_tensor({9, 16, 32}, 1.3f), true);
+	CHECK(same_bits_for_any_thread_count([&] { return weighted_sum(attention(q, k, v, 4, Tensor::empty({0}), true)); }, {q, k, v}));
+	// 1100 rows: the weight gradient is a small output over a long depth, which sgemm cuts into pieces
+	Value x = Value::leaf(sine_tensor({1100, 48}, 0.3f), true);
+	Value w = Value::leaf(sine_tensor({40, 48}, 0.7f), true);
+	Value b = Value::leaf(sine_tensor({40}, 1.1f), true);
+	CHECK(same_bits_for_any_thread_count([&] { return weighted_sum(linear(x, w, b)); }, {x, w, b}));
+}
+
+TEST_CASE("attention throws on mismatched shapes") {
+	Value q = Value::leaf(Tensor({2, 4, 6}));
+	CHECK_THROWS_AS(attention(q, q, q, 4, Tensor::empty({0}), false), TensorShapeError);
+	CHECK_THROWS_AS(attention(q, Value::leaf(Tensor({2, 5, 6})), Value::leaf(Tensor({2, 4, 6})), 2, Tensor::empty({0}), false), TensorShapeError);
+	CHECK_THROWS_AS(attention(q, Value::leaf(Tensor({2, 5, 6})), Value::leaf(Tensor({2, 5, 6})), 2, Tensor::empty({0}), true), TensorShapeError);
+	CHECK_THROWS_AS(attention(q, q, q, 2, Tensor({2, 3}), false), TensorShapeError);
+}
+
+TEST_CASE("an intermediate gradient is stored by its first consumer and added to by the next") {
+	// h feeds two ops; neither zeroes it first, yet its gradient is the sum of both contributions
+	Value x = Value::leaf(Tensor({4}, std::vector<float>{1.0f, -2.0f, 3.0f, -4.0f}), true);
+	Value h = scale(x, 2.0f);
+	Value loss = sum(add(relu(h), reshape(h, {4})));
+	loss.backward();
+	CHECK(h.grad().data() == std::vector<float>{2.0f, 1.0f, 2.0f, 1.0f});
+	CHECK(x.grad().data() == std::vector<float>{4.0f, 2.0f, 4.0f, 2.0f});
+	// A second backward over the same graph starts from nothing again instead of accumulating
+	x.zero_grad();
+	loss.backward();
+	CHECK(h.grad().data() == std::vector<float>{2.0f, 1.0f, 2.0f, 1.0f});
+}
+
+TEST_CASE("a stored gradient has the bits of adding to zero: negative zero becomes positive zero") {
+	// relu passes -0 * 1 = -0 back; accumulated into a zeroed buffer that is +0
+	Value x = Value::leaf(Tensor({2}, std::vector<float>{1.0f, 2.0f}), true);
+	Value h = reshape(x, {2});
+	Value loss = sum(mul(relu(h), Value::leaf(Tensor({2}, std::vector<float>{-0.0f, 3.0f}))));
+	loss.backward();
+	CHECK(!std::signbit(h.grad().data()[0]));
+	CHECK(h.grad().data()[1] == 3.0f);
+}
+
+TEST_CASE("a non-leaf gradient nobody wrote reads as zeros") {
+	// The slice reaches only half of h, through a rule that adds into a zeroed buffer
+	Value x = Value::leaf(Tensor({4}, 1.0f), true);
+	Value h = scale(x, 3.0f);
+	sum(slice(h, 0, 0, 2)).backward();
+	CHECK(h.grad().data() == std::vector<float>{1.0f, 1.0f, 0.0f, 0.0f});
+}
+
+TEST_CASE("maxpool2d 2x2 window keeps the first of equal maxima") {
+	Value x = Value::leaf(Tensor({1, 1, 2, 4}, std::vector<float>{5, 5, 1, 7, 5, 5, 7, 7}), true);
+	Value y = maxpool2d(x, 2, 2);
+	CHECK(y.data().data() == std::vector<float>{5.0f, 7.0f});
+	sum(y).backward();
+	CHECK(x.grad().data() == std::vector<float>{1, 0, 0, 1, 0, 0, 0, 0});
+}
+
+TEST_CASE("cross_entropy_loss throws on a target outside the classes") {
+	Value logits = Value::leaf(Tensor({2, 3}, 0.5f), true);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, Tensor({2}, std::vector<float>{0.0f, 3.0f})), TensorIndexError);
+	CHECK_THROWS_AS(cross_entropy_loss(logits, Tensor({2}, std::vector<float>{-1.0f, 1.0f})), TensorIndexError);
+}
+
+TEST_CASE("gelu matches the tanh formula and is bitwise identical for any thread count") {
+	Tensor t({70000});
+	for (size_t i = 0; i < t.size(); i++) t.data()[i] = -6.0f + 12.0f * static_cast<float>(i) / static_cast<float>(t.size());
+	Value x = Value::leaf(t, true);
+	Value y = gelu(x);
+	for (size_t i = 0; i < t.size(); i += 97) {
+		const double v = t.data()[i];
+		const double want = 0.5 * v * (1.0 + std::tanh(0.7978845608 * (v + 0.044715 * v * v * v)));
+		CHECK(std::fabs(y.data().data()[i] - want) < 2e-6);
+	}
+	CHECK(same_bits_for_any_thread_count([&] { return sum(gelu(x)); }, {x}));
 }

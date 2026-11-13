@@ -6,10 +6,60 @@
 
 #pragma once
 
-#include <vector>
+#include <algorithm>
 #include <exception>
+#include <memory>
+#include <new>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 namespace nn {
+
+/*
+ * Allocator whose default construction leaves trivially constructible elements uninitialised, so
+ * Storage(n) and Storage::resize(n) do not write n zeros. Every other construction behaves as in
+ * std::allocator, and two instances always compare equal.
+ */
+template <typename T>
+struct DefaultInitAllocator : std::allocator<T> {
+	template <typename U>
+	struct rebind {
+		using other = DefaultInitAllocator<U>;
+	};
+	using std::allocator<T>::allocator;
+
+	template <typename U>
+	void construct(U* p) noexcept(std::is_nothrow_default_constructible<U>::value) {
+		::new (static_cast<void*>(p)) U;
+	}
+	template <typename U, typename... Args>
+	void construct(U* p, Args&&... args) {
+		::new (static_cast<void*>(p)) U(std::forward<Args>(args)...);
+	}
+};
+
+/*
+ * Flat element storage of a Tensor: a std::vector<float> whose sized construction and resize leave
+ * the floats uninitialised. Tensor itself still hands out zeroed memory unless asked for
+ * Tensor::empty.
+ */
+using Storage = std::vector<float, DefaultInitAllocator<float>>;
+
+/* Public, elementwise equality between Storage and a plain std::vector<float>
+ *
+ * Parameters:
+ * Storage a: first sequence
+ * vector<float> b: second sequence
+ *
+ * Returns bool: true if both have the same length and equal elements
+ */
+inline bool operator==(const Storage& a, const std::vector<float>& b) {
+	return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
+}
+inline bool operator==(const std::vector<float>& a, const Storage& b) { return b == a; }
+inline bool operator!=(const Storage& a, const std::vector<float>& b) { return !(a == b); }
+inline bool operator!=(const std::vector<float>& a, const Storage& b) { return !(b == a); }
 
 /*
  * Thrown when tensor shapes are incompatible for an operation: mismatched
@@ -43,7 +93,7 @@ public:
  * Attributes:
  * vector<size_t> shape_: size of each dimension
  * vector<size_t> strides_: row-major stride of each dimension, computed from shape_
- * vector<float> data_: flattened element storage, size equal to the product of shape_
+ * Storage data_: flattened element storage, size equal to the product of shape_
  */
 class Tensor {
 public:
@@ -65,6 +115,26 @@ public:
 	 * Returns Tensor: none (constructor); throws TensorShapeError if data.size() does not match shape
 	 */
 	Tensor(std::vector<size_t> shape, std::vector<float> data);
+
+	/* Public, construct a tensor that takes ownership of existing storage
+	 *
+	 * Parameters:
+	 * vector<size_t> shape: size of each dimension
+	 * Storage data: values in row-major order, size must equal the product of shape
+	 *
+	 * Returns Tensor: none (constructor); throws TensorShapeError if data.size() does not match shape
+	 */
+	Tensor(std::vector<size_t> shape, Storage data);
+
+	/* Public, construct a tensor whose elements are NOT initialised
+	 *
+	 * Parameters:
+	 * vector<size_t> shape: size of each dimension
+	 *
+	 * Returns Tensor: a tensor with indeterminate contents. Use it only when every element is
+	 * written before it is read, which skips the zero-fill pass of Tensor(shape)
+	 */
+	static Tensor empty(std::vector<size_t> shape);
 
 	/* Public, construct a tensor filled with one value
 	 *
@@ -130,17 +200,17 @@ public:
 	 *
 	 * Parameters: none
 	 *
-	 * Returns const vector<float>&: flattened row-major element storage
+	 * Returns const Storage&: flattened row-major element storage
 	 */
-	const std::vector<float>& data() const;
+	const Storage& data() const;
 
 	/* Public, read-write access to the underlying flat storage
 	 *
 	 * Parameters: none
 	 *
-	 * Returns vector<float>&: flattened row-major element storage
+	 * Returns Storage&: flattened row-major element storage
 	 */
-	std::vector<float>& data();
+	Storage& data();
 
 	/* Public, in-place elementwise addition, same shape only
 	 *
@@ -227,6 +297,23 @@ public:
 	 */
 	Tensor transpose(std::vector<size_t> perm) const;
 
+	/* How transpose_into combines each permuted element with the destination: overwrite it,
+	 * add to it, or overwrite it with element + 0 (the bits that adding to a zeroed
+	 * destination leaves, which turns -0 into +0)
+	 */
+	enum class Combine { kCopy, kAdd, kAddToZero };
+
+	/* Public, write transpose(perm) into a caller-owned buffer, without a temporary tensor
+	 *
+	 * Parameters:
+	 * vector<size_t> perm: as transpose
+	 * float* dst: size() floats, in the row-major order of the permuted shape; must not alias this tensor
+	 * Combine mode: how each element combines with dst
+	 *
+	 * Returns void: throws TensorShapeError if perm has the wrong length
+	 */
+	void transpose_into(const std::vector<size_t>& perm, float* dst, Combine mode) const;
+
 	/* Public, sum along one axis
 	 *
 	 * Parameters:
@@ -309,7 +396,10 @@ public:
 private:
 	std::vector<size_t> shape_;
 	std::vector<size_t> strides_;
-	std::vector<float> data_;
+	Storage data_;
+
+	struct Uninit {};
+	Tensor(std::vector<size_t> shape, Uninit);
 
 	/**
 	 * Converts a multi-dimensional index into an offset into data_

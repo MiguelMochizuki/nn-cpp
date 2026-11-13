@@ -96,3 +96,18 @@ TEST_CASE("per-chunk sums match the serial sum") {
 	}
 	CHECK(got == want);
 }
+
+TEST_CASE("the spin budget is clamped and jobs complete with and without spinning") {
+	ThreadGuard g;
+	const size_t saved = spin_microseconds();
+	set_num_threads(4);
+	for (size_t us : {0, 50, 2000}) {
+		set_spin_microseconds(us);
+		CHECK(spin_microseconds() == us);
+		// Back-to-back jobs: workers are caught both spinning and asleep
+		for (int rep = 0; rep < 200; ++rep) CHECK(covers_once(64));
+	}
+	set_spin_microseconds(1000000);
+	CHECK(spin_microseconds() == 10000);
+	set_spin_microseconds(saved);
+}

@@ -768,7 +768,7 @@ TEST_CASE("weighted draws under manual_seed(1) match the pinned golden sequence"
 	std::vector<double> w = {1, 2, 3, 0, 4};
 	manual_seed(1);
 	DataLoader loader(dataset, 8, w, 8);
-	std::vector<float> got = loader.get_batch(0).second.data();
+	Storage got = loader.get_batch(0).second.data();
 	std::vector<float> golden = {2, 1, 0, 0, 1, 4, 2, 2};
 	CHECK(got == golden);
 }

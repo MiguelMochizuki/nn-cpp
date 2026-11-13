@@ -13,6 +13,7 @@
 #include "nn/nn/dropout.hpp"
 #include "nn/nn/batchnorm.hpp"
 #include "nn/random.hpp"
+#include "nn/kernels/parallel.hpp"
 #include "nn/nn/activation.hpp"
 #include "nn/nn/sequential.hpp"
 #include "nn/autograd/ops.hpp"
@@ -246,7 +247,7 @@ TEST_CASE("Sequential eval and train reach every child") {
 
 namespace {
 
-std::vector<float> dropout_mask(Dropout& d, size_t n) {
+Storage dropout_mask(Dropout& d, size_t n) {
 	return d.forward(Value::leaf(Tensor({n}, 1.0f))).data().data();
 }
 
@@ -279,7 +280,7 @@ TEST_CASE("Dropout with p = 1 gives finite zeros and zero gradient") {
 TEST_CASE("Dropout in train mode keeps the mean and drops about p") {
 	manual_seed(1);
 	Dropout d(0.3f);
-	std::vector<float> out = dropout_mask(d, 100000);
+	Storage out = dropout_mask(d, 100000);
 	double total = 0;
 	size_t zeros = 0;
 	for (float v : out) {
@@ -581,4 +582,70 @@ TEST_CASE("Dropout mask for a fixed seed is pinned") {
 	manual_seed(123);
 	Dropout d(0.5f);
 	CHECK(dropout_mask(d, 12) == std::vector<float>{2, 0, 2, 2, 2, 2, 0, 0, 2, 2, 0, 2});
+}
+
+TEST_CASE("Sequential folds Conv2d and BatchNorm into a following ReLU without changing values or gradients") {
+	struct Restore {
+		size_t saved = kernels::num_threads();
+		~Restore() { kernels::set_num_threads(saved); }
+	} restore;
+	const size_t N = 5, Cin = 3, Cout = 4, H = 9, W = 9;
+	manual_seed(11);
+	Tensor xt = Tensor::random({N, Cin, H, W}, -1.0f, 1.0f), probe = Tensor::random({N, Cout, 5, 5}, 0.5f, 1.5f);
+
+	// Same seed, same weights: one model Sequential fuses, the other applies the layers by hand
+	auto build = [&](Conv2d*& conv, BatchNorm2d*& bn) {
+		manual_seed(12);
+		auto seq = std::make_unique<Sequential>();
+		auto c = std::make_unique<Conv2d>(Cin, Cout, 3, 2, 1);
+		auto b = std::make_unique<BatchNorm2d>(Cout);
+		conv = c.get();
+		bn = b.get();
+		seq->add(std::move(c));
+		seq->add(std::make_unique<ReLU>());
+		seq->add(std::move(b));
+		seq->add(std::make_unique<ReLU>());
+		return seq;
+	};
+	for (bool training : {true, false}) {
+		Conv2d *fc, *mc;
+		BatchNorm2d *fb, *mb;
+		auto fused = build(fc, fb);
+		auto manual_holder = build(mc, mb);
+		fused->train(training);
+		manual_holder->train(training);
+		// Move some signal into the BatchNorm bias so the ReLU clips about half of the activations
+		for (size_t c = 0; c < Cout; c++) {
+			fb->parameters()[1].data().data()[c] = mb->parameters()[1].data().data()[c] = 0.3f * static_cast<float>(c) - 0.4f;
+		}
+		{
+			// Folding the ReLUs must build fewer graph nodes than running the layers one by one
+			Value x = Value::leaf(xt, false);
+			const size_t base = Value::live_node_count();
+			Value y_fused = fused->forward(x);
+			const size_t fused_nodes = Value::live_node_count() - base;
+			Value y_manual = relu(mb->forward(relu(mc->forward(x))));
+			const size_t manual_nodes = Value::live_node_count() - base - fused_nodes;
+			CHECK(fused_nodes < manual_nodes);
+		}
+		auto run = [&](bool use_fused, size_t threads) {
+			kernels::set_num_threads(threads);
+			Value x = Value::leaf(xt, true);
+			Value y = x;
+			if (use_fused) y = fused->forward(x);
+			else y = relu(mb->forward(relu(mc->forward(x))));
+			for (Value p : (use_fused ? fused->parameters() : manual_holder->parameters())) p.zero_grad();
+			sum(mul(y, Value::leaf(probe, false))).backward();
+			std::vector<Storage> out{y.data().data(), x.grad().data()};
+			for (const Value& p : (use_fused ? fused->parameters() : manual_holder->parameters())) out.push_back(p.grad().data());
+			return out;
+		};
+		auto a = run(true, 1), b = run(false, 1), c4 = run(true, 4);
+		CHECK(a[0] == b[0]);  // the folded ReLU produces exactly the same activations
+		for (size_t i = 1; i < a.size(); i++) {
+			REQUIRE(a[i].size() == b[i].size());
+			for (size_t k = 0; k < a[i].size(); k++) CHECK(std::fabs(a[i][k] - b[i][k]) < 1e-4f);
+		}
+		if (training) CHECK(a == c4);  // bitwise equal for any thread count
+	}
 }

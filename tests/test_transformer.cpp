@@ -106,7 +106,7 @@ TEST_CASE("positional encoding sinusoidal and learned") {
 	CHECK(pe.parameters().empty());
 	Value y = pe.forward(Value::leaf(Tensor({2, 3, 4}, 0.0f), false));
 	CHECK(y.data().shape() == std::vector<size_t>{2, 3, 4});
-	const std::vector<float>& d = y.data().data();
+	const Storage& d = y.data().data();
 	CHECK(d[0] == doctest::Approx(0.0f));
 	CHECK(d[1] == doctest::Approx(1.0f));
 	CHECK(d[2] == doctest::Approx(0.0f));
@@ -417,7 +417,7 @@ TEST_CASE("transformer train() reaches dropout in blocks") {
 	Transformer t(c);
 	Value ids = ids_of({1, 2, 3, 4}, 1, 4);
 	t.eval();
-	std::vector<float> e = t.forward(ids).data().data();
+	Storage e = t.forward(ids).data().data();
 	CHECK(t.forward(ids).data().data() == e);
 	t.train();
 	bool differs = false;
@@ -540,7 +540,7 @@ TEST_CASE("transformer forward and gradients are bitwise equal for any thread co
 		for (const Value& p : t.parameters()) Value(p).zero_grad();
 		Value y = t.forward(ids);
 		sum(mul(y, Value::leaf(w, false))).backward();
-		std::vector<std::vector<float>> out{y.data().data()};
+		std::vector<Storage> out{y.data().data()};
 		for (const Value& p : t.parameters()) out.push_back(p.grad().data());
 		return out;
 	};

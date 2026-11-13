@@ -124,7 +124,7 @@ TEST_CASE("transformer_tiny keeps LayerNorm gamma at one and zeroes biases") {
 	Workload w = make_workload("transformer_tiny", 1);
 	size_t gammas = 0, zeros = 0;
 	for (const auto& p : w.model->named_parameters()) {
-		const std::vector<float>& d = p.second.data().data();
+		const nn::Storage& d = p.second.data().data();
 		auto ends = [&](const char* suffix) {
 			std::string n = p.first, e = suffix;
 			return n.size() >= e.size() && n.compare(n.size() - e.size(), e.size(), e) == 0;

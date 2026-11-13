@@ -44,8 +44,8 @@ Sequential make_mlp(size_t hidden = 3) {
 	return m;
 }
 
-std::vector<std::vector<float>> snapshot(const Module& m) {
-	std::vector<std::vector<float>> out;
+std::vector<Storage> snapshot(const Module& m) {
+	std::vector<Storage> out;
 	for (const Value& p : m.parameters()) out.push_back(p.data().data());
 	return out;
 }
@@ -396,7 +396,7 @@ TEST_CASE("a buffer-less file does not load into a model with buffers and change
 	plain.add(std::make_unique<Linear>(2, 1));
 	save_checkpoint(PATH, plain);
 	WithBuffer m;
-	std::vector<float> w_before = m.parameters()[0].data().data();
+	Storage w_before = m.parameters()[0].data().data();
 	try {
 		load_checkpoint(PATH, m);
 		FAIL("expected std::runtime_error");

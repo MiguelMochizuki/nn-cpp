@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(nn_cpp VERSION 1.3.0 LANGUAGES CXX)
+project(nn_cpp VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ add_library(nn_core STATIC
 	src/random.cpp
 	src/kernels/gemm.cpp
 	src/kernels/parallel.cpp
+	src/kernels/vmath.cpp
 	src/autograd/value.cpp
 	src/autograd/ops.cpp
 	src/nn/linear.cpp
@@ -56,6 +57,12 @@ set_target_properties(nn_core PROPERTIES EXPORT_NAME core)
 
 find_package(Threads REQUIRED)
 target_link_libraries(nn_core PUBLIC Threads::Threads)
+
+# Contraction into FMA depends on how each copy of a loop gets inlined, which would
+# make results differ between thread counts; the GEMM microkernels use explicit intrinsics
+if(NOT MSVC)
+	target_compile_options(nn_core PUBLIC -ffp-contract=off)
+endif()
 
 if(NN_NATIVE)
 	if(MSVC)

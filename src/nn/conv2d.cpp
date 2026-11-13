@@ -69,6 +69,10 @@ Value Conv2d::forward(const Value& input) {
 	return conv2d(input, weight_, bias_, static_cast<int>(stride_), static_cast<int>(padding_));
 }
 
+Value Conv2d::forward_relu(const Value& input) {
+	return conv2d_relu(input, weight_, bias_, static_cast<int>(stride_), static_cast<int>(padding_));
+}
+
 std::vector<Value> Conv2d::parameters() const { return {weight_, bias_}; }
 
 std::vector<std::pair<std::string, Value>> Conv2d::named_parameters() const {

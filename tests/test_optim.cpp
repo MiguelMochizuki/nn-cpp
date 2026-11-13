@@ -228,7 +228,7 @@ TEST_CASE("Adam load_state rejects SGD state and wrong shapes") {
 namespace {
 
 // Runs n steps on a fixed gradient and returns the parameter values
-std::vector<float> run_steps(Optimizer& opt, Value& p, int n) {
+Storage run_steps(Optimizer& opt, Value& p, int n) {
 	for (int i = 0; i < n; i++) {
 		p.grad() = Tensor({2}, std::vector<float>{0.5f, -1.0f});
 		opt.step();

@@ -31,7 +31,7 @@ void reseed_parameters(Module& model, unsigned seed, bool keep_ones_rank1) {
 	std::mt19937 gen(seed);
 	for (Value p : model.parameters()) {
 		Tensor& t = p.data();
-		std::vector<float>& d = t.data();
+		Storage& d = t.data();
 		if (t.ndim() < 2) {
 			if (keep_ones_rank1 && std::all_of(d.begin(), d.end(), [](float v) { return v == 1.0f; })) continue;
 			std::fill(d.begin(), d.end(), 0.0f);
@@ -198,7 +198,7 @@ Workload make_workload(const std::string& name, unsigned seed) {
 	for (float& v : teacher) v = sym(gen);
 
 	w.y = Tensor(w.classification ? std::vector<size_t>{n} : std::vector<size_t>{n, out});
-	const std::vector<float>& xd = w.x.data();
+	const Storage& xd = w.x.data();
 	for (size_t i = 0; i < n; i++) {
 		std::vector<float> o(out, 0.0f);
 		for (size_t f = 0; f < feat; f++)
